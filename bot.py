@@ -12,10 +12,8 @@ import re
 # ==================================================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
-
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
-
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 QR_IMAGE = "https://files.catbox.moe/r0ldyf.jpg"
@@ -31,7 +29,7 @@ app = Client(
 )
 
 # ==================================================
-# DATABASE CONNECTION (HEROKU POSTGRES)
+# DATABASE CONNECTION
 # ==================================================
 conn = psycopg2.connect(DATABASE_URL, sslmode="require")
 cur = conn.cursor()
@@ -56,14 +54,15 @@ CREATE TABLE IF NOT EXISTS orders (
 conn.commit()
 
 # ==================================================
-# USER STATE MANAGEMENT
+# USER STATE
 # ==================================================
 support_waiting = set()
 price_waiting = set()
 order_waiting = set()
+mrp_waiting = {}   # uid -> product_link
 
 # ==================================================
-# PRICE SLAB LOGIC
+# PRICE SLABS
 # ==================================================
 def get_percentage(mrp):
     slabs = [
@@ -78,50 +77,19 @@ def get_percentage(mrp):
         (10400, 11300, 70),
         (11400, 12800, 71)
     ]
-    for low, high, percent in slabs:
+    for low, high, p in slabs:
         if low <= mrp <= high:
-            return percent
+            return p
     return None
 
 # ==================================================
-# LENSKART MRP SCRAPER (FIXED – JSON BASED)
+# AUTO MRP (BEST EFFORT – MOSTLY FAILS)
 # ==================================================
 def get_mrp(url):
-    try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-        }
-
-        response = requests.get(url, headers=headers, timeout=10)
-        html = response.text
-
-        scripts = re.findall(
-            r'<script type="application/ld\+json">(.*?)</script>',
-            html,
-            re.DOTALL
-        )
-
-        for script in scripts:
-            data = json.loads(script)
-
-            if isinstance(data, list):
-                data = data[0]
-
-            if data.get("@type") == "Product":
-                offers = data.get("offers", {})
-                price = offers.get("price")
-
-                if price:
-                    return int(float(price))
-
-        return None
-
-    except Exception as e:
-        print("MRP fetch error:", e)
-        return None
+    return None   # Lenskart blocks scraping
 
 # ==================================================
-# /START COMMAND
+# /START
 # ==================================================
 @app.on_message(filters.command("start"))
 async def start_handler(client, message):
@@ -144,92 +112,85 @@ async def start_handler(client, message):
 # COMMANDS
 # ==================================================
 @app.on_message(filters.command("support"))
-async def support_command(client, message):
+async def support_cmd(client, message):
     uid = message.from_user.id
     support_waiting.add(uid)
     price_waiting.discard(uid)
     order_waiting.discard(uid)
+    mrp_waiting.pop(uid, None)
 
-    await message.reply(
-        "✉️ Please explain your problem in *one single message*."
-    )
+    await message.reply("✉️ Please explain your problem in one single message.")
 
 @app.on_message(filters.command("pricecheckup"))
-async def price_command(client, message):
+async def price_cmd(client, message):
     uid = message.from_user.id
     price_waiting.add(uid)
     support_waiting.discard(uid)
     order_waiting.discard(uid)
+    mrp_waiting.pop(uid, None)
 
     await message.reply("🔗 Send Lenskart product link")
 
 @app.on_message(filters.command("neworder"))
-async def neworder_command(client, message):
+async def order_cmd(client, message):
     uid = message.from_user.id
     order_waiting.add(uid)
     support_waiting.discard(uid)
     price_waiting.discard(uid)
+    mrp_waiting.pop(uid, None)
 
     await message.reply("🔗 Send product link to place order")
 
 # ==================================================
-# CALLBACK BUTTON HANDLER
+# CALLBACKS
 # ==================================================
 @app.on_callback_query()
-async def callback_handler(client, callback):
-    uid = callback.from_user.id
+async def callbacks(client, cb):
+    uid = cb.from_user.id
 
     support_waiting.discard(uid)
     price_waiting.discard(uid)
     order_waiting.discard(uid)
+    mrp_waiting.pop(uid, None)
 
-    if callback.data == "support":
+    if cb.data == "support":
         support_waiting.add(uid)
-        await callback.message.reply(
-            "✉️ Please explain your problem in *one single message*."
-        )
+        await cb.message.reply("✉️ Please explain your problem in one single message.")
 
-    elif callback.data == "price":
+    elif cb.data == "price":
         price_waiting.add(uid)
-        await callback.message.reply("🔗 Send Lenskart product link")
+        await cb.message.reply("🔗 Send Lenskart product link")
 
-    elif callback.data == "buy":
+    elif cb.data == "buy":
         order_waiting.add(uid)
-        await callback.message.reply("🔗 Send product link to place order")
+        await cb.message.reply("🔗 Send product link to place order")
 
 # ==================================================
-# TEXT MESSAGE HANDLER
+# TEXT HANDLER
 # ==================================================
 @app.on_message(filters.text & filters.private)
 async def text_handler(client, message):
     uid = message.from_user.id
-    text = message.text
+    text = message.text.strip()
 
-    # ---------------- SUPPORT ----------------
+    # ---------- SUPPORT ----------
     if uid in support_waiting:
         support_waiting.discard(uid)
-
         await client.send_message(
             ADMIN_ID,
             f"📩 SUPPORT MESSAGE\n\nUser ID: {uid}\n\n{text}"
         )
-
         await message.reply("✅ Your message has been sent to admin")
         return
 
-    # ---------------- PRICE / ORDER ----------------
-    if "lenskart.com" in text and (uid in price_waiting or uid in order_waiting):
-        price_waiting.discard(uid)
-        order_waiting.discard(uid)
-
-        mrp = get_mrp(text)
-        if not mrp:
-            await message.reply("❌ Could not fetch MRP")
-            return
+    # ---------- MANUAL MRP INPUT ----------
+    if uid in mrp_waiting and text.isdigit():
+        mrp = int(text)
+        product_link = mrp_waiting.pop(uid)
 
         percent = get_percentage(mrp)
         if not percent:
-            await message.reply("❌ Price not supported")
+            await message.reply("❌ Price slab not supported")
             return
 
         final_price = int(mrp * percent / 100)
@@ -237,7 +198,7 @@ async def text_handler(client, message):
 
         cur.execute(
             "INSERT INTO orders VALUES (%s,%s,%s,%s,%s,%s)",
-            (order_id, uid, text, mrp, final_price, "PAYMENT_WAITING")
+            (order_id, uid, product_link, mrp, final_price, "PAYMENT_WAITING")
         )
         conn.commit()
 
@@ -246,21 +207,37 @@ async def text_handler(client, message):
             caption=(
                 f"🆔 Order ID: `{order_id}`\n"
                 f"🧾 MRP: ₹{mrp}\n"
-                f"📉 Discount: {percent}%\n"
+                f"📉 Discount Applied\n"
                 f"💰 Pay: ₹{final_price}\n\n"
                 f"After payment, send screenshot here"
             )
         )
         return
 
-    # ---------------- RANDOM MESSAGE ----------------
+    # ---------- PRODUCT LINK ----------
+    if "lenskart.com" in text and (uid in price_waiting or uid in order_waiting):
+        price_waiting.discard(uid)
+        order_waiting.discard(uid)
+
+        mrp = get_mrp(text)
+
+        if not mrp:
+            mrp_waiting[uid] = text
+            await message.reply(
+                "⚠️ Unable to auto-fetch MRP.\n\n"
+                "Please type the product *MRP* shown on Lenskart.\n"
+                "Example: 1900"
+            )
+            return
+
+    # ---------- RANDOM MESSAGE ----------
     await message.reply(
         "⚠️ Please choose an option first.\n\n"
-        "For support click 🆘 Support or use /support"
+        "Use buttons or /support /pricecheckup /neworder"
     )
 
 # ==================================================
-# PAYMENT SCREENSHOT HANDLER
+# PAYMENT SCREENSHOT
 # ==================================================
 @app.on_message(filters.photo & filters.private)
 async def payment_handler(client, message):
@@ -298,54 +275,37 @@ async def payment_handler(client, message):
         f"/reject {order_id}"
     )
 
-    await message.reply(
-        "✅ Payment received\n⏳ Order waiting for confirmation"
-    )
+    await message.reply("✅ Payment received. Waiting for confirmation.")
 
 # ==================================================
-# ADMIN CONFIRM ORDER
+# ADMIN CONFIRM
 # ==================================================
 @app.on_message(filters.command("confirm") & filters.user(ADMIN_ID))
 async def confirm_handler(client, message):
     oid = message.text.split()[-1]
 
-    cur.execute(
-        "UPDATE orders SET status='CONFIRMED' WHERE order_id=%s",
-        (oid,)
-    )
+    cur.execute("UPDATE orders SET status='CONFIRMED' WHERE order_id=%s", (oid,))
     conn.commit()
 
-    cur.execute(
-        "SELECT telegram_id FROM orders WHERE order_id=%s",
-        (oid,)
-    )
+    cur.execute("SELECT telegram_id FROM orders WHERE order_id=%s", (oid,))
     user = cur.fetchone()
 
     if user:
-        await client.send_message(
-            user[0],
-            f"✅ Order `{oid}` confirmed 🎉"
-        )
+        await client.send_message(user[0], f"✅ Order `{oid}` confirmed 🎉")
 
     await message.reply("Order confirmed")
 
 # ==================================================
-# ADMIN REJECT ORDER
+# ADMIN REJECT
 # ==================================================
 @app.on_message(filters.command("reject") & filters.user(ADMIN_ID))
 async def reject_handler(client, message):
     oid = message.text.split()[-1]
 
-    cur.execute(
-        "UPDATE orders SET status='REJECTED' WHERE order_id=%s",
-        (oid,)
-    )
+    cur.execute("UPDATE orders SET status='REJECTED' WHERE order_id=%s", (oid,))
     conn.commit()
 
-    cur.execute(
-        "SELECT telegram_id FROM orders WHERE order_id=%s",
-        (oid,)
-    )
+    cur.execute("SELECT telegram_id FROM orders WHERE order_id=%s", (oid,))
     user = cur.fetchone()
 
     if user:
@@ -358,6 +318,6 @@ async def reject_handler(client, message):
     await message.reply("Order rejected & user notified")
 
 # ==================================================
-# RUN BOT
+# RUN
 # ==================================================
 app.run()
