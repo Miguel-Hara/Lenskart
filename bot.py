@@ -13,7 +13,7 @@ QR_IMAGE = "https://files.catbox.moe/r0ldyf.jpg"
 
 # ================= BOT =================
 app = Client(
-    "lenskart_order_bot",
+    "lenskart_looto_yojna",
     bot_token=BOT_TOKEN,
     api_id=API_ID,
     api_hash=API_HASH
@@ -46,8 +46,8 @@ conn.commit()
 support_waiting = set()
 price_waiting = set()
 order_waiting = set()
-mrp_waiting = {}          # uid -> product_link
-support_map = {}          # admin_msg_id -> user_id
+mrp_waiting = {}
+support_map = {}
 
 # ================= PRICE SLABS =================
 def get_percentage(mrp):
@@ -65,6 +65,10 @@ def get_percentage(mrp):
 # ================= START =================
 @app.on_message(filters.command("start"))
 async def start(client, msg):
+    if msg.from_user.id == ADMIN_ID:
+        await msg.reply("👑 Admin panel active.")
+        return
+
     cur.execute(
         "INSERT INTO users VALUES (%s,%s) ON CONFLICT DO NOTHING",
         (msg.from_user.id, msg.from_user.username)
@@ -80,29 +84,177 @@ async def start(client, msg):
         ])
     )
 
-# ================= COMMANDS =================
-@app.on_message(filters.command(["support","pricecheckup","neworder"]))
-async def block_admin_commands(client, msg):
-    if msg.from_user.id == ADMIN_ID:
-        await msg.reply("⚠️ Admin cannot use customer commands.")
+# ================= CALLBACKS (USER) =================
+@app.on_callback_query()
+async def callbacks(client, cb):
+    uid = cb.from_user.id
+
+    # ---------- ADMIN ACTION ----------
+    if uid == ADMIN_ID and cb.data.startswith("admin_"):
+        action, oid = cb.data.split(":")
+        status = "CONFIRMED" if action == "admin_confirm" else "REJECTED"
+
+        cur.execute(
+            "UPDATE orders SET status=%s WHERE order_id=%s",
+            (status, oid)
+        )
+        conn.commit()
+
+        cur.execute(
+            "SELECT telegram_id FROM orders WHERE order_id=%s",
+            (oid,)
+        )
+        user = cur.fetchone()
+
+        if user:
+            if status == "CONFIRMED":
+                await client.send_message(user[0], f"✅ Order `{oid}` confirmed 🎉")
+            else:
+                await client.send_message(
+                    user[0],
+                    "❌ *Order Rejected*\n\nYou will receive a refund on your original payment method."
+                )
+
+        await cb.message.edit_reply_markup(None)
+        await cb.answer("Action completed ✅", show_alert=True)
         return
 
-@app.on_message(filters.command("support"))
-async def support_cmd(client, msg):
-    support_waiting.add(msg.from_user.id)
-    await msg.reply("✉️ Please explain your problem in one single message.")
+    # ---------- BLOCK ADMIN ----------
+    if uid == ADMIN_ID:
+        await cb.answer("Admin cannot place orders", show_alert=True)
+        return
 
-@app.on_message(filters.command("pricecheckup"))
-async def price_cmd(client, msg):
-    price_waiting.add(msg.from_user.id)
-    await msg.reply("🔗 Send Lenskart product link")
+    # ---------- USER FLOW ----------
+    support_waiting.discard(uid)
+    price_waiting.discard(uid)
+    order_waiting.discard(uid)
+    mrp_waiting.pop(uid, None)
 
-@app.on_message(filters.command("neworder"))
-async def order_cmd(client, msg):
-    order_waiting.add(msg.from_user.id)
-    await msg.reply("🔗 Send product link to place order")
+    if cb.data == "support":
+        support_waiting.add(uid)
+        await cb.message.reply("✉️ Please explain your problem in one single message.")
 
-# ================= CALLBACKS =================
+    elif cb.data == "price":
+        price_waiting.add(uid)
+        await cb.message.reply("🔗 Send Lenskart product link")
+
+    elif cb.data == "buy":
+        order_waiting.add(uid)
+        await cb.message.reply("🔗 Send product link to place order")
+
+# ================= TEXT HANDLER =================
+@app.on_message(filters.text & filters.private)
+async def text_handler(client, msg):
+    uid = msg.from_user.id
+    text = msg.text.strip()
+
+    if uid == ADMIN_ID:
+        return
+
+    # ---------- SUPPORT ----------
+    if uid in support_waiting:
+        support_waiting.discard(uid)
+        sent = await client.send_message(
+            ADMIN_ID,
+            f"📩 SUPPORT MESSAGE\n\nUser ID: {uid}\n\n{text}"
+        )
+        support_map[sent.id] = uid
+        await msg.reply("✅ Your message has been sent to admin")
+        return
+
+    # ---------- MANUAL MRP ----------
+    if uid in mrp_waiting and text.isdigit():
+        mrp = int(text)
+        link = mrp_waiting.pop(uid)
+
+        percent = get_percentage(mrp)
+        if not percent:
+            await msg.reply("❌ Price not supported")
+            return
+
+        price = int(mrp * percent / 100)
+        oid = str(uuid.uuid4())[:8]
+
+        cur.execute(
+            "INSERT INTO orders VALUES (%s,%s,%s,%s,%s,%s)",
+            (oid, uid, link, mrp, price, "PAYMENT_WAITING")
+        )
+        conn.commit()
+
+        await msg.reply_photo(
+            QR_IMAGE,
+            caption=(
+                f"🆔 Order ID: `{oid}`\n"
+                f"🧾 MRP: ₹{mrp}\n"
+                f"💰 Pay: ₹{price}\n\n"
+                f"After payment, send screenshot here"
+            )
+        )
+        return
+
+    # ---------- PRODUCT LINK ----------
+    if "lenskart.com" in text:
+        mrp_waiting[uid] = text
+        await msg.reply(
+            "⚠️ Unable to auto-fetch MRP.\n\n"
+            "Please type ONLY the original *MRP* shown on Lenskart.\n"
+            "❌ Do NOT send discounted price.\n"
+            "Example: 1900"
+        )
+        return
+
+    await msg.reply("⚠️ Please choose an option first.")
+
+# ================= PAYMENT SCREENSHOT =================
+@app.on_message(filters.photo & filters.private)
+async def payment(client, msg):
+    uid = msg.from_user.id
+
+    cur.execute(
+        "SELECT order_id, product_link, mrp, final_price FROM orders "
+        "WHERE telegram_id=%s AND status='PAYMENT_WAITING'",
+        (uid,)
+    )
+    order = cur.fetchone()
+    if not order:
+        await msg.reply("❌ No pending order found")
+        return
+
+    oid, link, mrp, price = order
+    cur.execute("UPDATE orders SET status='PAYMENT_SENT' WHERE order_id=%s",(oid,))
+    conn.commit()
+
+    await msg.forward(ADMIN_ID)
+    await client.send_message(
+        ADMIN_ID,
+        f"💰 *PAYMENT RECEIVED*\n\n"
+        f"Order ID: `{oid}`\n"
+        f"MRP: ₹{mrp}\n"
+        f"Paid: ₹{price}",
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ Confirm Order", callback_data=f"admin_confirm:{oid}"),
+                InlineKeyboardButton("❌ Reject Order", callback_data=f"admin_reject:{oid}")
+            ]
+        ])
+    )
+
+    await msg.reply("✅ Payment received. Waiting for confirmation.")
+
+# ================= ADMIN SUPPORT REPLY =================
+@app.on_message(filters.reply & filters.user(ADMIN_ID))
+async def admin_reply(client, msg):
+    if msg.text and msg.text.startswith("/"):
+        return
+
+    replied = msg.reply_to_message
+    if replied and replied.id in support_map:
+        user_id = support_map.pop(replied.id)
+        await client.send_message(user_id, f"💬 *Admin Reply*\n\n{msg.text}")
+        await msg.reply("✅ Reply sent")
+
+# ================= RUN =================
+app.run()# ================= CALLBACKS =================
 @app.on_callback_query()
 async def callbacks(client, cb):
     uid = cb.from_user.id
