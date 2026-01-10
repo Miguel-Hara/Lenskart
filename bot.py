@@ -4,10 +4,11 @@ import os
 import uuid
 import requests
 import psycopg2
-from bs4 import BeautifulSoup
+import json
+import re
 
 # ==================================================
-# ENV CONFIGURATION (NO HARDCODE)
+# ENV CONFIGURATION
 # ==================================================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
@@ -83,17 +84,40 @@ def get_percentage(mrp):
     return None
 
 # ==================================================
-# LENSKART SCRAPER
+# LENSKART MRP SCRAPER (FIXED – JSON BASED)
 # ==================================================
 def get_mrp(url):
     try:
-        response = requests.get(url, timeout=10)
-        soup = BeautifulSoup(response.text, "html.parser")
-        price_tag = soup.find("span", class_="price")
-        if not price_tag:
-            return None
-        return int("".join(filter(str.isdigit, price_tag.text)))
-    except:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+        }
+
+        response = requests.get(url, headers=headers, timeout=10)
+        html = response.text
+
+        scripts = re.findall(
+            r'<script type="application/ld\+json">(.*?)</script>',
+            html,
+            re.DOTALL
+        )
+
+        for script in scripts:
+            data = json.loads(script)
+
+            if isinstance(data, list):
+                data = data[0]
+
+            if data.get("@type") == "Product":
+                offers = data.get("offers", {})
+                price = offers.get("price")
+
+                if price:
+                    return int(float(price))
+
+        return None
+
+    except Exception as e:
+        print("MRP fetch error:", e)
         return None
 
 # ==================================================
@@ -117,7 +141,7 @@ async def start_handler(client, message):
     )
 
 # ==================================================
-# COMMANDS (ALTERNATIVE TO BUTTONS)
+# COMMANDS
 # ==================================================
 @app.on_message(filters.command("support"))
 async def support_command(client, message):
@@ -181,7 +205,7 @@ async def text_handler(client, message):
     uid = message.from_user.id
     text = message.text
 
-    # ---------------- SUPPORT FLOW ----------------
+    # ---------------- SUPPORT ----------------
     if uid in support_waiting:
         support_waiting.discard(uid)
 
@@ -193,7 +217,7 @@ async def text_handler(client, message):
         await message.reply("✅ Your message has been sent to admin")
         return
 
-    # ---------------- PRICE / ORDER FLOW ----------------
+    # ---------------- PRICE / ORDER ----------------
     if "lenskart.com" in text and (uid in price_waiting or uid in order_waiting):
         price_waiting.discard(uid)
         order_waiting.discard(uid)
@@ -229,7 +253,7 @@ async def text_handler(client, message):
         )
         return
 
-    # ---------------- RANDOM MESSAGE ALERT ----------------
+    # ---------------- RANDOM MESSAGE ----------------
     await message.reply(
         "⚠️ Please choose an option first.\n\n"
         "For support click 🆘 Support or use /support"
