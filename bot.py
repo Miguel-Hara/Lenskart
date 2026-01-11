@@ -13,6 +13,7 @@ API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+START_IMAGE = "https://files.catbox.moe/5t348b.jpg"
 QR_IMAGE = "https://files.catbox.moe/r0ldyf.jpg"
 MRP_HELP_IMAGE = "https://files.catbox.moe/orp6r5.jpg"
 
@@ -57,18 +58,24 @@ conn.commit()
 support_waiting = set()
 price_waiting = set()
 order_waiting = set()
-mrp_waiting = {}     # user_id -> product_link
-support_map = {}     # admin_msg_id -> user_id
+mrp_waiting = {}      # user_id -> product_link
+support_map = {}      # admin_msg_id -> user_id
 
 # ==================================================
 # PRICE SLABS
 # ==================================================
 def get_percentage(mrp):
     slabs = [
-        (1900,3100,57.5),(3200,4100,59),(4200,5400,62),
-        (5500,6400,64.5),(6500,7400,65.5),(7500,8400,66),
-        (8500,9400,68),(9400,10300,69),(10400,11300,70),
-        (11400,12800,71)
+        (1900, 3100, 57.5),
+        (3200, 4100, 59),
+        (4200, 5400, 62),
+        (5500, 6400, 64.5),
+        (6500, 7400, 65.5),
+        (7500, 8400, 66),
+        (8500, 9400, 68),
+        (9400, 10300, 69),
+        (10400, 11300, 70),
+        (11400, 12800, 71)
     ]
     for low, high, p in slabs:
         if low <= mrp <= high:
@@ -90,8 +97,13 @@ async def start_handler(client, msg):
     )
     conn.commit()
 
-    await msg.reply(
-        "👓 *Lenskart Order Bot*\n\nChoose an option:",
+    await msg.reply_photo(
+        START_IMAGE,
+        caption=(
+            "👓 *Lenskart Order Bot*\n\n"
+            "Order original Lenskart frames at discounted prices.\n"
+            "Choose an option below 👇"
+        ),
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("💰 Price Check", callback_data="price")],
             [InlineKeyboardButton("🛒 Buy New Item", callback_data="buy")],
