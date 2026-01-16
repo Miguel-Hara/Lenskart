@@ -16,7 +16,7 @@ LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID"))
 
 # ================= BUSINESS RULE =================
 MIN_MRP = 3000
-DISCOUNT_PERCENT = 75   # flat 75% OFF
+DISCOUNT_PERCENT = 75  # Flat 75% OFF
 
 # ================= IMAGES =================
 START_IMAGE = "https://files.catbox.moe/5t348b.jpg"
@@ -87,10 +87,9 @@ async def start(client, msg):
         START_IMAGE,
         caption=(
             "👓 *Lenskart Order Bot*\n\n"
-            "🔥 *Flat 75% OFF on all frames*\n"
+            "🔥 *Flat 75% OFF*\n"
             "❌ No Buy 1 Get 1\n"
             "✅ Minimum MRP ₹3000\n\n"
-            "👉 Steps:\n"
             "1️⃣ Send product link\n"
             "2️⃣ Send original MRP\n"
             "3️⃣ Pay discounted amount\n"
@@ -126,7 +125,7 @@ async def track(client, msg):
 async def admin_reply(client, msg):
     parts = msg.text.split(maxsplit=2)
     if len(parts) < 3:
-        await msg.reply("Usage: /reply <user_id> <message>")
+        await msg.reply("Usage:\n/reply <user_id> <message>")
         return
 
     user_id = int(parts[1])
@@ -227,7 +226,6 @@ async def payment(client, msg):
     )
 
     await msg.forward(ADMIN_ID)
-
     await client.send_message(
         ADMIN_ID,
         summary,
@@ -243,7 +241,7 @@ async def payment(client, msg):
 
     await msg.reply(
         "✅ Payment mil gaya hai.\n"
-        "⏳ Verification ke baad confirmation ya rejection ka update yahin milega."
+        "⏳ Verification ke baad update yahin milega."
     )
 
 # ================= PRIVATE TEXT =================
@@ -251,12 +249,24 @@ async def payment(client, msg):
 async def private_all(client, msg):
     uid = msg.from_user.id
 
+    # ---- SUPPORT ----
     if uid in support_waiting:
         support_waiting.discard(uid)
+
         await msg.forward(ADMIN_ID)
-        await msg.reply("✅ Support message sent")
+        await client.send_message(
+            ADMIN_ID,
+            f"🆘 *SUPPORT MESSAGE RECEIVED*\n\n"
+            f"👤 User ID: `{uid}`\n"
+            f"📌 Username: @{msg.from_user.username if msg.from_user.username else 'NoUsername'}\n\n"
+            "Reply using:\n"
+            f"`/reply {uid} <your message>`"
+        )
+
+        await msg.reply("✅ Support message sent to admin")
         return
 
+    # ---- PRODUCT LINK ----
     if msg.text and "lenskart.com" in msg.text:
         mrp_waiting[uid] = msg.text
         await msg.reply_photo(
@@ -269,6 +279,7 @@ async def private_all(client, msg):
         )
         return
 
+    # ---- MRP ----
     if uid in mrp_waiting and msg.text.isdigit():
         mrp = int(msg.text)
         link = mrp_waiting.pop(uid)
