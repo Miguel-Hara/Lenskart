@@ -110,6 +110,13 @@ async def help_cmd(client, msg):
         "Support: /support"
     )
 
+# ================= SUPPORT COMMAND =================
+@app.on_message(filters.command("support") & filters.private)
+async def support_command(client, msg):
+    uid = msg.from_user.id
+    support_waiting.add(uid)
+    await msg.reply("🆘 Send your issue in ONE message")
+
 # ================= TRACK =================
 @app.on_message(filters.command("track"))
 async def track(client, msg):
@@ -176,10 +183,10 @@ async def callbacks(client, cb):
 
     if data == "support":
         support_waiting.add(uid)
-        await cb.message.reply("Send your issue in one message")
+        await cb.message.reply("🆘 Send your issue in ONE message")
         return
 
-# ================= SUPPORT HANDLER (FIXED) =================
+# ================= SUPPORT HANDLER =================
 @app.on_message(filters.private & filters.text)
 async def support_handler(client, msg):
     uid = msg.from_user.id
