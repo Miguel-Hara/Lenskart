@@ -51,7 +51,7 @@ conn.commit()
 
 # ================= STATE =================
 support_waiting = set()
-support_map = {}   # forwarded_msg_id -> user_id
+support_map = {}   # support_id -> user_id
 mrp_waiting = {}
 
 # ================= PRICE SLABS =================
@@ -83,7 +83,7 @@ def status_buttons(oid):
 @app.on_message(filters.command("start"))
 async def start(client, msg):
     if msg.from_user.id == ADMIN_ID:
-        await msg.reply("👑 Admin panel active.\nOrders & payments yahin aayenge.")
+        await msg.reply("👑 Admin panel active.\nOrders & support yahin aayenge.")
         return
 
     cur.execute(
@@ -192,9 +192,12 @@ async def callbacks(client, cb):
 
     elif data == "support":
         support_waiting.add(uid)
-        await cb.message.reply("🆘 Apni problem ek hi message me bhejo")
+        await cb.message.reply(
+            "🆘 Apni problem *ek hi message* me bhejo.\n"
+            "Text / photo / sticker – sab allowed 👍"
+        )
 
-# ================= PAYMENT SCREENSHOT (FIXED) =================
+# ================= PAYMENT SCREENSHOT =================
 @app.on_message(filters.photo & filters.private)
 async def payment(client, msg):
     uid = msg.from_user.id
@@ -210,13 +213,32 @@ async def payment(client, msg):
 
     oid = row[0]
 
-    # Forward screenshot
+    # fetch order summary
+    cur.execute("""
+    SELECT u.username, o.telegram_id, o.product_link, o.mrp, o.final_price
+    FROM orders o
+    JOIN users u ON u.telegram_id = o.telegram_id
+    WHERE o.order_id=%s
+    """, (oid,))
+    username, user_id, link, mrp, price = cur.fetchone()
+
+    summary = (
+        "💰 *PAYMENT RECEIVED*\n\n"
+        f"🆔 Order ID: `{oid}`\n"
+        f"👤 User: @{username if username else 'NoUsername'}\n"
+        f"🆔 User ID: `{user_id}`\n\n"
+        f"🔗 Product:\n{link}\n\n"
+        f"💸 MRP: ₹{mrp}\n"
+        f"🔥 Pay Amount: ₹{price}"
+    )
+
+    # forward screenshot
     await msg.forward(ADMIN_ID)
 
-    # Send buttons
+    # send to admin
     await client.send_message(
         ADMIN_ID,
-        f"💰 *PAYMENT RECEIVED*\n\n🆔 Order ID: `{oid}`",
+        summary,
         reply_markup=InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("✅ Confirm Order", callback_data=f"admin_confirm:{oid}"),
@@ -225,9 +247,15 @@ async def payment(client, msg):
         ])
     )
 
+    # send to log channel
+    try:
+        await client.send_message(LOG_CHANNEL_ID, summary)
+    except:
+        pass
+
     await msg.reply(
         "✅ Payment mil gaya hai.\n"
-        "⏳ Verify hone ke baad update yahin aayega."
+        "⏳ Verify hone ke baad update yahin milega."
     )
 
 # ================= PRIVATE (NON-PHOTO) =================
@@ -238,8 +266,18 @@ async def private_all(client, msg):
     # ----- SUPPORT -----
     if uid in support_waiting:
         support_waiting.discard(uid)
-        fwd = await msg.forward(ADMIN_ID)
-        support_map[fwd.id] = uid
+        support_id = str(uuid.uuid4())[:8]
+        support_map[support_id] = uid
+
+        await msg.forward(ADMIN_ID)
+        await client.send_message(
+            ADMIN_ID,
+            f"🆘 *SUPPORT REQUEST*\n\n"
+            f"Support ID: `{support_id}`\n"
+            f"User ID: `{uid}`\n\n"
+            "⬇️ Is message par reply karo"
+        )
+
         await msg.reply("✅ Support message admin ko bhej diya gaya.")
         return
 
@@ -248,7 +286,12 @@ async def private_all(client, msg):
         mrp_waiting[uid] = msg.text
         await msg.reply_photo(
             MRP_HELP_IMAGE,
-            caption="Original MRP likho (discounted nahi)"
+            caption=(
+                "🧾 *Step 2 – MRP*\n\n"
+                "Sirf *original MRP* likho (discounted nahi)\n"
+                "Example:\nMRP ₹3900 → Discount ₹3100\n"
+                "Send: *3900*"
+            )
         )
         return
 
@@ -259,7 +302,7 @@ async def private_all(client, msg):
 
         percent = get_percentage(mrp)
         if not percent:
-            await msg.reply("❌ Is MRP par discount nahi hai.")
+            await msg.reply("❌ Is MRP par discount available nahi hai.")
             return
 
         price = int(mrp * percent / 100)
@@ -274,11 +317,12 @@ async def private_all(client, msg):
         await msg.reply_photo(
             QR_IMAGE,
             caption=(
-                f"💳 *Payment*\n\n"
+                f"💳 *Step 3 – Payment*\n\n"
                 f"🆔 Order ID: `{oid}`\n"
-                f"💰 Amount: ₹{price}\n\n"
-                "Payment ke baad screenshot bhejo 📸\n"
-                "Confirm / Reject ka update yahin milega ⏳"
+                f"💰 Pay Amount: ₹{price}\n\n"
+                "QR scan karke payment karo.\n"
+                "Payment ke baad screenshot yahin bhejo 📸\n\n"
+                "⏳ Confirm ya reject ka update yahin milega."
             )
         )
 
@@ -286,9 +330,15 @@ async def private_all(client, msg):
 @app.on_message(filters.reply & filters.user(ADMIN_ID))
 async def admin_reply(client, msg):
     replied = msg.reply_to_message
-    if replied and replied.id in support_map:
-        user_id = support_map.pop(replied.id)
-        await msg.copy(user_id)
+    if not replied or not replied.text:
+        return
+
+    for word in replied.text.split():
+        sid = word.strip("`")
+        if len(sid) == 8 and sid in support_map:
+            user_id = support_map.pop(sid)
+            await msg.copy(user_id)
+            break
 
 # ================= RUN =================
 app.run()
