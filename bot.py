@@ -13,6 +13,8 @@ API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+LOG_CHANNEL_ID = -1003583093312
+
 START_IMAGE = "https://files.catbox.moe/5t348b.jpg"
 QR_IMAGE = "https://files.catbox.moe/r0ldyf.jpg"
 MRP_HELP_IMAGE = "https://files.catbox.moe/orp6r5.jpg"
@@ -58,24 +60,19 @@ conn.commit()
 support_waiting = set()
 price_waiting = set()
 order_waiting = set()
-mrp_waiting = {}      # user_id -> product_link
-support_map = {}      # admin_msg_id -> user_id
+mrp_waiting = {}          # user_id -> product_link
+support_map = {}          # admin_msg_id -> user_id
+broadcast_waiting = False
 
 # ==================================================
 # PRICE SLABS
 # ==================================================
 def get_percentage(mrp):
     slabs = [
-        (1900, 3100, 57.5),
-        (3200, 4100, 59),
-        (4200, 5400, 62),
-        (5500, 6400, 64.5),
-        (6500, 7400, 65.5),
-        (7500, 8400, 66),
-        (8500, 9400, 68),
-        (9400, 10300, 69),
-        (10400, 11300, 70),
-        (11400, 12800, 71)
+        (1900,3100,57.5),(3200,4100,59),(4200,5400,62),
+        (5500,6400,64.5),(6500,7400,65.5),(7500,8400,66),
+        (8500,9400,68),(9400,10300,69),(10400,11300,70),
+        (11400,12800,71)
     ]
     for low, high, p in slabs:
         if low <= mrp <= high:
@@ -88,7 +85,7 @@ def get_percentage(mrp):
 @app.on_message(filters.command("start"))
 async def start_handler(client, msg):
     if msg.from_user.id == ADMIN_ID:
-        await msg.reply("👑 Admin panel active.")
+        await msg.reply("👑 Admin panel active.\nUse /broadcast to send updates.")
         return
 
     cur.execute(
@@ -112,7 +109,16 @@ async def start_handler(client, msg):
     )
 
 # ==================================================
-# CALLBACK HANDLER (USER + ADMIN)
+# ADMIN BROADCAST
+# ==================================================
+@app.on_message(filters.command("broadcast") & filters.user(ADMIN_ID))
+async def broadcast_cmd(client, msg):
+    global broadcast_waiting
+    broadcast_waiting = True
+    await msg.reply("📢 Send the message you want to broadcast to all users")
+
+# ==================================================
+# CALLBACK HANDLER
 # ==================================================
 @app.on_callback_query()
 async def callback_handler(client, cb):
@@ -140,48 +146,36 @@ async def callback_handler(client, cb):
             LEFT JOIN users ON users.telegram_id = orders.telegram_id
             WHERE orders.order_id = %s
         """, (oid,))
-        data = cur.fetchone()
-
-        if not data:
-            await cb.answer("Order not found", show_alert=True)
-            return
-
-        user_id, link, mrp, final_price, username = data
+        user_id, link, mrp, final_price, username = cur.fetchone()
         username = f"@{username}" if username else "Not set"
 
         # Notify user
         if status == "CONFIRMED":
-            await client.send_message(
-                user_id,
-                f"✅ *Order Confirmed*\n\nYour order `{oid}` has been confirmed 🎉"
-            )
+            await client.send_message(user_id, f"✅ Order `{oid}` confirmed 🎉")
         else:
             await client.send_message(
                 user_id,
-                "❌ *Order Rejected*\n\n"
-                "You will receive a refund on your original payment method."
+                "❌ *Order Rejected*\n\nYou will receive a refund on your original payment method."
             )
 
-        # Admin summary
-        await client.send_message(
-            ADMIN_ID,
-            f"✅ *ORDER {status}*\n\n"
-            f"🆔 Order ID: `{oid}`\n\n"
-            f"👤 *User Details*\n"
-            f"• Username: {username}\n"
-            f"• User ID: `{user_id}`\n\n"
-            f"🛒 *Product Details*\n"
-            f"• Link: {link}\n"
-            f"• MRP: ₹{mrp}\n"
-            f"• Discounted Price: ₹{final_price}\n\n"
-            f"📌 Status: {status}"
+        # Admin summary + log
+        summary = (
+            f"🧾 ORDER {status}\n\n"
+            f"Order ID: {oid}\n"
+            f"User: {username} ({user_id})\n"
+            f"MRP: ₹{mrp}\n"
+            f"Final Price: ₹{final_price}\n"
+            f"Link: {link}"
         )
+
+        await client.send_message(ADMIN_ID, summary)
+        await client.send_message(LOG_CHANNEL_ID, summary)
 
         await cb.message.edit_reply_markup(None)
         await cb.answer("Action completed ✅", show_alert=True)
         return
 
-    # ---------- BLOCK ADMIN FROM USER FLOW ----------
+    # ---------- BLOCK ADMIN ----------
     if uid == ADMIN_ID:
         await cb.answer("Admin cannot place orders", show_alert=True)
         return
@@ -205,12 +199,35 @@ async def callback_handler(client, cb):
         await cb.message.reply("🔗 Send product link to place order")
 
 # ==================================================
-# TEXT HANDLER (USERS)
+# TEXT HANDLER
 # ==================================================
 @app.on_message(filters.text & filters.private)
 async def text_handler(client, msg):
+    global broadcast_waiting
     uid = msg.from_user.id
     text = msg.text.strip()
+
+    # ---------- ADMIN BROADCAST MESSAGE ----------
+    if uid == ADMIN_ID and broadcast_waiting:
+        broadcast_waiting = False
+
+        cur.execute("SELECT telegram_id FROM users")
+        users = cur.fetchall()
+
+        sent = 0
+        for (user_id,) in users:
+            try:
+                await client.send_message(user_id, text)
+                sent += 1
+            except:
+                pass
+
+        await msg.reply(f"📢 Broadcast sent to {sent} users")
+        await client.send_message(
+            LOG_CHANNEL_ID,
+            f"📢 Broadcast sent\nTotal users: {sent}"
+        )
+        return
 
     if uid == ADMIN_ID:
         return
@@ -220,10 +237,9 @@ async def text_handler(client, msg):
         support_waiting.discard(uid)
         sent = await client.send_message(
             ADMIN_ID,
-            f"📩 *SUPPORT MESSAGE*\n\nUser ID: `{uid}`\n\n{text}"
+            f"📩 SUPPORT MESSAGE\nUser ID: {uid}\n\n{text}"
         )
         support_map[sent.id] = uid
-        await msg.reply("✅ Your message has been sent to admin")
         return
 
     # ---------- MANUAL MRP ----------
@@ -232,10 +248,6 @@ async def text_handler(client, msg):
         link = mrp_waiting.pop(uid)
 
         percent = get_percentage(mrp)
-        if not percent:
-            await msg.reply("❌ MRP not supported in pricing slabs")
-            return
-
         final_price = int(mrp * percent / 100)
         oid = str(uuid.uuid4())[:8]
 
@@ -247,12 +259,12 @@ async def text_handler(client, msg):
 
         await msg.reply_photo(
             QR_IMAGE,
-            caption=(
-                f"🆔 Order ID: `{oid}`\n"
-                f"🧾 MRP: ₹{mrp}\n"
-                f"💰 Pay: ₹{final_price}\n\n"
-                f"After payment, send screenshot here"
-            )
+            caption=f"🆔 Order ID: `{oid}`\nPay: ₹{final_price}"
+        )
+
+        await client.send_message(
+            LOG_CHANNEL_ID,
+            f"🆕 New Order\nOrder ID: {oid}\nUser ID: {uid}\nMRP: ₹{mrp}\nPay: ₹{final_price}"
         )
         return
 
@@ -263,12 +275,9 @@ async def text_handler(client, msg):
             MRP_HELP_IMAGE,
             caption=(
                 "⚠️ Unable to auto-fetch MRP.\n\n"
-                "Please type ONLY the original *MRP* shown on Lenskart.\n"
-                "❌ Do NOT send discounted price.\n\n"
-                "Example:\n"
-                "Original MRP = ₹3900\n"
-                "Discounted Price = ₹3100\n\n"
-                "You must send: 3900"
+                "Send ONLY original MRP.\n"
+                "Example: MRP ₹3900 → Discounted ₹3100\n"
+                "Send: 3900"
             )
         )
         return
@@ -283,17 +292,15 @@ async def payment_handler(client, msg):
     uid = msg.from_user.id
 
     cur.execute(
-        "SELECT order_id, product_link, mrp, final_price FROM orders "
+        "SELECT order_id, mrp, final_price FROM orders "
         "WHERE telegram_id=%s AND status='PAYMENT_WAITING'",
         (uid,)
     )
     order = cur.fetchone()
-
     if not order:
-        await msg.reply("❌ No pending order found")
         return
 
-    oid, link, mrp, price = order
+    oid, mrp, price = order
     cur.execute(
         "UPDATE orders SET status='PAYMENT_SENT' WHERE order_id=%s",
         (oid,)
@@ -301,12 +308,10 @@ async def payment_handler(client, msg):
     conn.commit()
 
     await msg.forward(ADMIN_ID)
+
     await client.send_message(
         ADMIN_ID,
-        f"💰 *PAYMENT RECEIVED*\n\n"
-        f"🆔 Order ID: `{oid}`\n"
-        f"MRP: ₹{mrp}\n"
-        f"Paid: ₹{price}",
+        f"💰 PAYMENT RECEIVED\nOrder ID: {oid}\nMRP: ₹{mrp}\nPaid: ₹{price}",
         reply_markup=InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("✅ Confirm Order", callback_data=f"admin_confirm:{oid}"),
@@ -315,24 +320,20 @@ async def payment_handler(client, msg):
         ])
     )
 
-    await msg.reply("✅ Payment received. Waiting for confirmation.")
+    await client.send_message(
+        LOG_CHANNEL_ID,
+        f"💰 Payment Received\nOrder ID: {oid}\nUser ID: {uid}\nPaid: ₹{price}"
+    )
 
 # ==================================================
 # ADMIN SUPPORT REPLY
 # ==================================================
 @app.on_message(filters.reply & filters.user(ADMIN_ID))
 async def admin_reply(client, msg):
-    if msg.text and msg.text.startswith("/"):
-        return
-
     replied = msg.reply_to_message
     if replied and replied.id in support_map:
         user_id = support_map.pop(replied.id)
-        await client.send_message(
-            user_id,
-            f"💬 *Admin Reply*\n\n{msg.text}"
-        )
-        await msg.reply("✅ Reply sent to user")
+        await client.send_message(user_id, f"💬 Admin Reply:\n\n{msg.text}")
 
 # ==================================================
 # RUN
