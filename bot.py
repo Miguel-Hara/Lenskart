@@ -75,7 +75,7 @@ def status_buttons(oid):
 @app.on_message(filters.command("start"))
 async def start(client, msg):
     if msg.from_user.id == ADMIN_ID:
-        await msg.reply("👑 Admin mode active")
+        await msg.reply("Admin mode active")
         return
 
     cur.execute(
@@ -87,13 +87,13 @@ async def start(client, msg):
     await msg.reply_photo(
         START_IMAGE,
         caption=(
-            "👓 *Lenskart Order Bot*\n\n"
+            "Lenskart Order Bot\n\n"
             "Simple ordering • Tracking • Support\n\n"
             "Use /help to know steps"
         ),
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🛒 New Order", callback_data="buy")],
-            [InlineKeyboardButton("🆘 Support", callback_data="support")]
+            [InlineKeyboardButton("New Order", callback_data="buy")],
+            [InlineKeyboardButton("Support", callback_data="support")]
         ])
     )
 
@@ -101,13 +101,13 @@ async def start(client, msg):
 @app.on_message(filters.command("help"))
 async def help_cmd(client, msg):
     await msg.reply(
-        "📘 *How to use the bot*\n\n"
-        "1️⃣ Send Lenskart product link\n"
-        "2️⃣ Send original MRP\n"
-        "3️⃣ Pay via QR\n"
-        "4️⃣ Send payment screenshot\n\n"
-        "📦 Track: /track ORDER_ID\n"
-        "🆘 Support: /support"
+        "How to use:\n\n"
+        "1. Send Lenskart product link\n"
+        "2. Send original MRP\n"
+        "3. Pay via QR\n"
+        "4. Send payment screenshot\n\n"
+        "Track: /track ORDER_ID\n"
+        "Support: /support"
     )
 
 # ================= TRACK =================
@@ -125,10 +125,10 @@ async def track(client, msg):
     row = cur.fetchone()
 
     if not row:
-        await msg.reply("❌ Order not found")
+        await msg.reply("Order not found")
         return
 
-    await msg.reply(f"📦 Order `{oid}`\nStatus: *{row[0]}*")
+    await msg.reply(f"Order {oid}\nStatus: {row[0]}")
 
 # ================= ORDERS (ADMIN) =================
 @app.on_message(filters.command("orders") & filters.user(ADMIN_ID))
@@ -137,12 +137,12 @@ async def orders_cmd(client, msg):
     rows = cur.fetchall()
 
     if not rows:
-        await msg.reply("No orders found.")
+        await msg.reply("No orders found")
         return
 
-    text = "📦 *Recent Orders*\n\n"
+    text = "Recent Orders:\n\n"
     for oid, uid, status in rows:
-        text += f"• `{oid}` | `{uid}` | *{status}*\n"
+        text += f"{oid} | {uid} | {status}\n"
 
     await msg.reply(text)
 
@@ -151,18 +151,18 @@ async def orders_cmd(client, msg):
 async def broadcast_start(client, msg):
     global broadcast_waiting
     broadcast_waiting = True
-    await msg.reply("📢 Send message to broadcast")
+    await msg.reply("Send the message to broadcast")
 
 # ================= ADMIN REPLY =================
 @app.on_message(filters.command("reply") & filters.user(ADMIN_ID))
 async def admin_reply(client, msg):
     parts = msg.text.split(maxsplit=2)
     if len(parts) < 3:
-        await msg.reply("Usage:\n/reply <user_id> <message>")
+        await msg.reply("Usage: /reply user_id message")
         return
 
-    await client.send_message(int(parts[1]), f"📩 *Support Reply*\n\n{parts[2]}")
-    await msg.reply("✅ Reply sent")
+    await client.send_message(int(parts[1]), parts[2])
+    await msg.reply("Reply sent")
 
 # ================= CALLBACKS =================
 @app.on_callback_query()
@@ -171,12 +171,12 @@ async def callbacks(client, cb):
     data = cb.data
 
     if data == "buy":
-        await cb.message.reply("🔗 Send Lenskart product link")
+        await cb.message.reply("Send Lenskart product link")
         return
 
     if data == "support":
         support_waiting.add(uid)
-        await cb.message.reply("🆘 Send your issue in ONE message")
+        await cb.message.reply("Send your issue in one message")
         return
 
 # ================= SUPPORT HANDLER (FIXED) =================
@@ -193,14 +193,14 @@ async def support_handler(client, msg):
 
     await client.send_message(
         ADMIN_ID,
-        f"🆘 *SUPPORT MESSAGE RECEIVED*\n\n"
-        f"👤 User ID: `{uid}`\n"
-        f"📌 Username: @{msg.from_user.username if msg.from_user.username else 'NoUsername'}\n\n"
-        "Reply using:\n"
-        f"`/reply {uid} <message>`"
+        f"SUPPORT MESSAGE RECEIVED\n\n"
+        f"User ID: {uid}\n"
+        f"Username: @{msg.from_user.username if msg.from_user.username else 'NoUsername'}\n\n"
+        f"Reply using:\n"
+        f"/reply {uid} your message"
     )
 
-    await msg.reply("✅ Support message sent to admin")
+    await msg.reply("Support message sent to admin")
 
 # ================= PAYMENT =================
 @app.on_message(filters.photo & filters.private)
@@ -216,19 +216,19 @@ async def payment(client, msg):
     row = cur.fetchone()
 
     if not row:
-        await msg.reply("❌ No pending order")
+        await msg.reply("No pending order")
         return
 
     oid, link, mrp, price, username = row
 
     summary = (
-        "💰 *PAYMENT RECEIVED*\n\n"
-        f"🆔 Order ID: `{oid}`\n"
-        f"👤 User: @{username if username else 'NoUsername'}\n"
-        f"🆔 User ID: `{uid}`\n\n"
-        f"💸 MRP: ₹{mrp}\n"
-        f"✅ Pay Amount: ₹{price}\n\n"
-        f"🔗 Product:\n{link}"
+        f"PAYMENT RECEIVED\n\n"
+        f"Order ID: {oid}\n"
+        f"User: @{username if username else 'NoUsername'}\n"
+        f"User ID: {uid}\n\n"
+        f"MRP: ₹{mrp}\n"
+        f"Pay Amount: ₹{price}\n\n"
+        f"Product:\n{link}"
     )
 
     await msg.forward(ADMIN_ID)
@@ -237,14 +237,14 @@ async def payment(client, msg):
         summary,
         reply_markup=InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("✅ Confirm Order", callback_data=f"admin_confirm:{oid}"),
-                InlineKeyboardButton("❌ Reject Order", callback_data=f"admin_reject:{oid}")
+                InlineKeyboardButton("Confirm", callback_data=f"admin_confirm:{oid}"),
+                InlineKeyboardButton("Reject", callback_data=f"admin_reject:{oid}")
             ]
         ])
     )
 
     await client.send_message(LOG_CHANNEL_ID, summary)
-    await msg.reply("✅ Payment received. Please wait ⏳")
+    await msg.reply("Payment received. Please wait.")
 
 # ================= RUN =================
 app.run()
