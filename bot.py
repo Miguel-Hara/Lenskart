@@ -3,7 +3,9 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import os
 import uuid
 import psycopg2
-
+import pyrogram.utils 
+ 
+pyrogram.utils.MIN_CHANNEL_ID = -1009147483647
 # ==================================================
 # ENV VARIABLES
 # ==================================================
