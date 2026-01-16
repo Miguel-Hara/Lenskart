@@ -106,11 +106,11 @@ async def help_cmd(client, msg):
         "2. Send original MRP (min ₹3000)\n"
         "3. Pay via QR\n"
         "4. Send payment screenshot\n\n"
-        "Track order: /track ORDER_ID\n"
+        "Track: /track ORDER_ID\n"
         "Support: /support"
     )
 
-# ================= SUPPORT COMMAND =================
+# ================= SUPPORT =================
 @app.on_message(filters.command("support") & filters.private)
 async def support_cmd(client, msg):
     support_waiting.add(msg.from_user.id)
@@ -136,48 +136,24 @@ async def track(client, msg):
 
     await msg.reply(f"Order {oid}\nStatus: {row[0]}")
 
-# ================= ORDERS (ADMIN) =================
-@app.on_message(filters.command("orders") & filters.user(ADMIN_ID))
-async def orders_cmd(client, msg):
-    cur.execute(
-        "SELECT order_id, telegram_id, status FROM orders ORDER BY order_id DESC LIMIT 20"
-    )
-    rows = cur.fetchall()
-
-    if not rows:
-        await msg.reply("No orders found")
-        return
-
-    text = "Recent Orders:\n\n"
-    for oid, uid, status in rows:
-        text += f"{oid} | {uid} | {status}\n"
-
-    await msg.reply(text)
-
-# ================= BROADCAST =================
-@app.on_message(filters.command("broadcast") & filters.user(ADMIN_ID))
-async def broadcast_cmd(client, msg):
-    global broadcast_waiting
-    broadcast_waiting = True
-    await msg.reply("Send message to broadcast")
-
 # ================= ADMIN REPLY =================
 @app.on_message(filters.command("reply") & filters.user(ADMIN_ID))
 async def admin_reply(client, msg):
     parts = msg.text.split(maxsplit=2)
     if len(parts) < 3:
-        await msg.reply("Usage:\n/reply user_id message")
+        await msg.reply("Usage: /reply user_id message")
         return
 
     await client.send_message(int(parts[1]), parts[2])
     await msg.reply("Reply sent")
 
-# ================= CALLBACKS =================
+# ================= CALLBACKS (CONFIRM / REJECT / STATUS) =================
 @app.on_callback_query()
 async def callbacks(client, cb):
-    uid = cb.from_user.id
     data = cb.data
+    uid = cb.from_user.id
 
+    # ---------- USER ----------
     if data == "buy":
         await cb.message.reply("Send Lenskart product link")
         return
@@ -187,7 +163,75 @@ async def callbacks(client, cb):
         await cb.message.reply("🆘 Send your issue in ONE message")
         return
 
-# ================= PAYMENT =================
+    # ---------- ADMIN CONFIRM ----------
+    if uid == ADMIN_ID and data.startswith("admin_confirm:"):
+        oid = data.split(":")[1]
+
+        cur.execute("UPDATE orders SET status='CONFIRMED' WHERE order_id=%s", (oid,))
+        conn.commit()
+
+        cur.execute("""
+            SELECT o.telegram_id, u.username, o.product_link, o.mrp, o.final_price
+            FROM orders o
+            JOIN users u ON u.telegram_id=o.telegram_id
+            WHERE o.order_id=%s
+        """, (oid,))
+        user_id, username, link, mrp, price = cur.fetchone()
+
+        summary = (
+            "PAYMENT RECEIVED\n\n"
+            f"Order ID: {oid}\n"
+            f"User: @{username or 'NoUsername'}\n"
+            f"User ID: {user_id}\n\n"
+            f"MRP: ₹{mrp}\n"
+            f"Pay Amount: ₹{price}\n\n"
+            f"Product:\n{link}"
+        )
+
+        await client.send_message(user_id, summary)
+        await cb.message.edit_reply_markup(status_buttons(oid))
+        await cb.answer("Order confirmed")
+        return
+
+    # ---------- ADMIN REJECT ----------
+    if uid == ADMIN_ID and data.startswith("admin_reject:"):
+        oid = data.split(":")[1]
+
+        cur.execute("UPDATE orders SET status='REJECTED' WHERE order_id=%s", (oid,))
+        conn.commit()
+
+        cur.execute("SELECT telegram_id FROM orders WHERE order_id=%s", (oid,))
+        user_id = cur.fetchone()[0]
+
+        await client.send_message(
+            user_id,
+            "Order rejected.\nRefund will be processed soon."
+        )
+
+        await cb.message.edit_reply_markup(None)
+        await cb.answer("Order rejected")
+        return
+
+    # ---------- STATUS UPDATE ----------
+    if uid == ADMIN_ID and data.startswith("status:"):
+        _, status, oid = data.split(":")
+        cur.execute("UPDATE orders SET status=%s WHERE order_id=%s", (status, oid))
+        conn.commit()
+
+        cur.execute("SELECT telegram_id FROM orders WHERE order_id=%s", (oid,))
+        user_id = cur.fetchone()[0]
+
+        messages = {
+            "PACKED": "📦 Your order has been packed",
+            "ON_THE_WAY": "🚚 Your order is on the way",
+            "DELIVERED": "📬 Your order has been delivered"
+        }
+
+        await client.send_message(user_id, messages[status])
+        await cb.answer("Status updated")
+        return
+
+# ================= PAYMENT SCREENSHOT =================
 @app.on_message(filters.photo & filters.private)
 async def payment(client, msg):
     uid = msg.from_user.id
@@ -229,9 +273,9 @@ async def payment(client, msg):
     )
 
     await client.send_message(LOG_CHANNEL_ID, summary)
-    await msg.reply("Payment received. Please wait.")
+    await msg.reply("Payment received. Please wait for confirmation.")
 
-# ================= PRIVATE TEXT HANDLER (ONLY ONE) =================
+# ================= PRIVATE TEXT HANDLER =================
 @app.on_message(filters.private & filters.text)
 async def private_text_handler(client, msg):
     global broadcast_waiting
