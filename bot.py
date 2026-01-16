@@ -12,8 +12,13 @@ ADMIN_ID = int(os.getenv("ADMIN_ID"))
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 DATABASE_URL = os.getenv("DATABASE_URL")
-LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "-1003583093312"))
+LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID"))
 
+# ================= BUSINESS RULE =================
+MIN_MRP = 3000
+DISCOUNT_PERCENT = 75   # flat 75% OFF
+
+# ================= IMAGES =================
 START_IMAGE = "https://files.catbox.moe/5t348b.jpg"
 QR_IMAGE = "https://files.catbox.moe/r0ldyf.jpg"
 MRP_HELP_IMAGE = "https://files.catbox.moe/orp6r5.jpg"
@@ -51,21 +56,7 @@ conn.commit()
 
 # ================= STATE =================
 support_waiting = set()
-support_map = {}   # support_id -> user_id
 mrp_waiting = {}
-
-# ================= PRICE SLABS =================
-def get_percentage(mrp):
-    slabs = [
-        (1900,3100,57.5),(3200,4100,59),(4200,5400,62),
-        (5500,6400,64.5),(6500,7400,65.5),(7500,8400,66),
-        (8500,9400,68),(9400,10300,69),(10400,11300,70),
-        (11400,12800,71)
-    ]
-    for low, high, p in slabs:
-        if low <= mrp <= high:
-            return p
-    return None
 
 # ================= STATUS BUTTONS =================
 def status_buttons(oid):
@@ -83,7 +74,7 @@ def status_buttons(oid):
 @app.on_message(filters.command("start"))
 async def start(client, msg):
     if msg.from_user.id == ADMIN_ID:
-        await msg.reply("👑 Admin panel active.\nOrders & support yahin aayenge.")
+        await msg.reply("👑 Admin mode active")
         return
 
     cur.execute(
@@ -96,11 +87,14 @@ async def start(client, msg):
         START_IMAGE,
         caption=(
             "👓 *Lenskart Order Bot*\n\n"
-            "Discounted Lenskart frames 💸\n\n"
-            "1️⃣ Product link bhejo\n"
-            "2️⃣ Original MRP likho\n"
-            "3️⃣ Payment karo\n"
-            "4️⃣ Order updates pao 📦"
+            "🔥 *Flat 75% OFF on all frames*\n"
+            "❌ No Buy 1 Get 1\n"
+            "✅ Minimum MRP ₹3000\n\n"
+            "👉 Steps:\n"
+            "1️⃣ Send product link\n"
+            "2️⃣ Send original MRP\n"
+            "3️⃣ Pay discounted amount\n"
+            "4️⃣ Get updates 📦"
         ),
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🛒 New Order", callback_data="buy")],
@@ -112,7 +106,7 @@ async def start(client, msg):
 @app.on_message(filters.command("track"))
 async def track(client, msg):
     if len(msg.command) != 2:
-        await msg.reply("Usage: `/track ORDER_ID`")
+        await msg.reply("Usage: /track ORDER_ID")
         return
 
     oid = msg.command[1]
@@ -122,10 +116,27 @@ async def track(client, msg):
     )
     row = cur.fetchone()
     if not row:
-        await msg.reply("❌ Koi aisa order nahi mila.")
+        await msg.reply("❌ Order not found")
         return
 
-    await msg.reply(f"📦 Order ID: `{oid}`\nStatus: *{row[0]}*")
+    await msg.reply(f"📦 Order `{oid}`\nStatus: *{row[0]}*")
+
+# ================= ADMIN SUPPORT REPLY =================
+@app.on_message(filters.command("reply") & filters.user(ADMIN_ID))
+async def admin_reply(client, msg):
+    parts = msg.text.split(maxsplit=2)
+    if len(parts) < 3:
+        await msg.reply("Usage: /reply <user_id> <message>")
+        return
+
+    user_id = int(parts[1])
+    text = parts[2]
+
+    await client.send_message(
+        user_id,
+        f"📩 *Support Reply*\n\n{text}"
+    )
+    await msg.reply("✅ Reply sent")
 
 # ================= CALLBACKS =================
 @app.on_callback_query()
@@ -133,26 +144,15 @@ async def callbacks(client, cb):
     uid = cb.from_user.id
     data = cb.data
 
-    # ----- STATUS UPDATE -----
-    if uid == ADMIN_ID and data.startswith("status:"):
-        _, status, oid = data.split(":")
-        cur.execute("UPDATE orders SET status=%s WHERE order_id=%s",(status,oid))
-        conn.commit()
-
-        cur.execute("SELECT telegram_id FROM orders WHERE order_id=%s",(oid,))
-        user_id = cur.fetchone()[0]
-
-        msgs = {
-            "PACKED":"📦 Aapka order pack ho gaya hai",
-            "ON_THE_WAY":"🚚 Aapka order raste mein hai",
-            "DELIVERED":"📬 Aapka order deliver ho gaya 🎉"
-        }
-
-        await client.send_message(user_id, msgs[status])
-        await cb.answer("Status updated")
+    if data == "buy":
+        await cb.message.reply("🔗 Send Lenskart product link")
         return
 
-    # ----- CONFIRM -----
+    if data == "support":
+        support_waiting.add(uid)
+        await cb.message.reply("🆘 Send your issue in ONE message")
+        return
+
     if uid == ADMIN_ID and data.startswith("admin_confirm"):
         oid = data.split(":")[1]
         cur.execute("UPDATE orders SET status='CONFIRMED' WHERE order_id=%s",(oid,))
@@ -161,15 +161,10 @@ async def callbacks(client, cb):
         cur.execute("SELECT telegram_id FROM orders WHERE order_id=%s",(oid,))
         user_id = cur.fetchone()[0]
 
-        await client.send_message(
-            user_id,
-            "✅ *Order Confirmed*\nPayment verify ho gaya hai 👍"
-        )
-
+        await client.send_message(user_id, "✅ Order confirmed 🎉")
         await cb.message.edit_reply_markup(status_buttons(oid))
         return
 
-    # ----- REJECT -----
     if uid == ADMIN_ID and data.startswith("admin_reject"):
         oid = data.split(":")[1]
         cur.execute("UPDATE orders SET status='REJECTED' WHERE order_id=%s",(oid,))
@@ -180,62 +175,59 @@ async def callbacks(client, cb):
 
         await client.send_message(
             user_id,
-            "❌ *Order Rejected*\n\nRefund original payment method par jaldi aa jaayega."
+            "❌ Order rejected.\n💸 Refund original payment method par soon aa jaayega."
         )
-
         await cb.message.edit_reply_markup(None)
         return
 
-    # ----- USER FLOW -----
-    if data == "buy":
-        await cb.message.reply("🔗 Lenskart product link bhejo")
+    if uid == ADMIN_ID and data.startswith("status:"):
+        _, status, oid = data.split(":")
+        cur.execute("UPDATE orders SET status=%s WHERE order_id=%s",(status,oid))
+        conn.commit()
 
-    elif data == "support":
-        support_waiting.add(uid)
-        await cb.message.reply(
-            "🆘 Apni problem *ek hi message* me bhejo.\n"
-            "Text / photo / sticker – sab allowed 👍"
-        )
+        cur.execute("SELECT telegram_id FROM orders WHERE order_id=%s",(oid,))
+        user_id = cur.fetchone()[0]
+
+        messages = {
+            "PACKED":"📦 Order packed",
+            "ON_THE_WAY":"🚚 Order on the way",
+            "DELIVERED":"📬 Order delivered 🎉"
+        }
+        await client.send_message(user_id, messages[status])
+        return
 
 # ================= PAYMENT SCREENSHOT =================
 @app.on_message(filters.photo & filters.private)
 async def payment(client, msg):
     uid = msg.from_user.id
 
-    cur.execute(
-        "SELECT order_id FROM orders WHERE telegram_id=%s AND status='PAYMENT_WAITING'",
-        (uid,)
-    )
+    cur.execute("""
+        SELECT o.order_id, o.product_link, o.mrp, o.final_price, u.username
+        FROM orders o
+        JOIN users u ON u.telegram_id=o.telegram_id
+        WHERE o.telegram_id=%s AND o.status='PAYMENT_WAITING'
+    """, (uid,))
     row = cur.fetchone()
+
     if not row:
-        await msg.reply("❌ Koi pending payment nahi mila.")
+        await msg.reply("❌ No pending order found")
         return
 
-    oid = row[0]
-
-    # fetch order summary
-    cur.execute("""
-    SELECT u.username, o.telegram_id, o.product_link, o.mrp, o.final_price
-    FROM orders o
-    JOIN users u ON u.telegram_id = o.telegram_id
-    WHERE o.order_id=%s
-    """, (oid,))
-    username, user_id, link, mrp, price = cur.fetchone()
+    oid, link, mrp, price, username = row
 
     summary = (
         "💰 *PAYMENT RECEIVED*\n\n"
         f"🆔 Order ID: `{oid}`\n"
         f"👤 User: @{username if username else 'NoUsername'}\n"
-        f"🆔 User ID: `{user_id}`\n\n"
-        f"🔗 Product:\n{link}\n\n"
+        f"🆔 User ID: `{uid}`\n\n"
         f"💸 MRP: ₹{mrp}\n"
-        f"🔥 Pay Amount: ₹{price}"
+        f"🔥 Discount: 75% OFF\n"
+        f"✅ Pay Amount: ₹{price}\n\n"
+        f"🔗 Product:\n{link}"
     )
 
-    # forward screenshot
     await msg.forward(ADMIN_ID)
 
-    # send to admin
     await client.send_message(
         ADMIN_ID,
         summary,
@@ -247,98 +239,68 @@ async def payment(client, msg):
         ])
     )
 
-    # send to log channel
-    try:
-        await client.send_message(LOG_CHANNEL_ID, summary)
-    except:
-        pass
+    await client.send_message(LOG_CHANNEL_ID, summary)
 
     await msg.reply(
         "✅ Payment mil gaya hai.\n"
-        "⏳ Verify hone ke baad update yahin milega."
+        "⏳ Verification ke baad confirmation ya rejection ka update yahin milega."
     )
 
-# ================= PRIVATE (NON-PHOTO) =================
+# ================= PRIVATE TEXT =================
 @app.on_message(filters.private & ~filters.photo)
 async def private_all(client, msg):
     uid = msg.from_user.id
 
-    # ----- SUPPORT -----
     if uid in support_waiting:
         support_waiting.discard(uid)
-        support_id = str(uuid.uuid4())[:8]
-        support_map[support_id] = uid
-
         await msg.forward(ADMIN_ID)
-        await client.send_message(
-            ADMIN_ID,
-            f"🆘 *SUPPORT REQUEST*\n\n"
-            f"Support ID: `{support_id}`\n"
-            f"User ID: `{uid}`\n\n"
-            "⬇️ Is message par reply karo"
-        )
-
-        await msg.reply("✅ Support message admin ko bhej diya gaya.")
+        await msg.reply("✅ Support message sent")
         return
 
-    # ----- PRODUCT LINK -----
     if msg.text and "lenskart.com" in msg.text:
         mrp_waiting[uid] = msg.text
         await msg.reply_photo(
             MRP_HELP_IMAGE,
             caption=(
-                "🧾 *Step 2 – MRP*\n\n"
-                "Sirf *original MRP* likho (discounted nahi)\n"
-                "Example:\nMRP ₹3900 → Discount ₹3100\n"
-                "Send: *3900*"
+                "🧾 Send ONLY original MRP\n\n"
+                "❌ Discounted price mat bhejo\n"
+                "✅ Minimum MRP ₹3000"
             )
         )
         return
 
-    # ----- MRP -----
-    if uid in mrp_waiting and msg.text and msg.text.isdigit():
+    if uid in mrp_waiting and msg.text.isdigit():
         mrp = int(msg.text)
         link = mrp_waiting.pop(uid)
 
-        percent = get_percentage(mrp)
-        if not percent:
-            await msg.reply("❌ Is MRP par discount available nahi hai.")
+        if mrp < MIN_MRP:
+            await msg.reply(
+                "❌ *Order not accepted*\n\n"
+                "Minimum product MRP ₹3000 hona chahiye."
+            )
             return
 
-        price = int(mrp * percent / 100)
+        final_price = int(mrp * (100 - DISCOUNT_PERCENT) / 100)
         oid = str(uuid.uuid4())[:8]
 
         cur.execute(
             "INSERT INTO orders VALUES (%s,%s,%s,%s,%s,%s)",
-            (oid, uid, link, mrp, price, "PAYMENT_WAITING")
+            (oid, uid, link, mrp, final_price, "PAYMENT_WAITING")
         )
         conn.commit()
 
         await msg.reply_photo(
             QR_IMAGE,
             caption=(
-                f"💳 *Step 3 – Payment*\n\n"
+                f"💳 *Payment Details*\n\n"
                 f"🆔 Order ID: `{oid}`\n"
-                f"💰 Pay Amount: ₹{price}\n\n"
+                f"💸 MRP: ₹{mrp}\n"
+                f"🔥 Discount: 75% OFF\n"
+                f"✅ Pay Amount: ₹{final_price}\n\n"
                 "QR scan karke payment karo.\n"
-                "Payment ke baad screenshot yahin bhejo 📸\n\n"
-                "⏳ Confirm ya reject ka update yahin milega."
+                "Screenshot bhejo 📸"
             )
         )
-
-# ================= ADMIN SUPPORT REPLY =================
-@app.on_message(filters.reply & filters.user(ADMIN_ID))
-async def admin_reply(client, msg):
-    replied = msg.reply_to_message
-    if not replied or not replied.text:
-        return
-
-    for word in replied.text.split():
-        sid = word.strip("`")
-        if len(sid) == 8 and sid in support_map:
-            user_id = support_map.pop(sid)
-            await msg.copy(user_id)
-            break
 
 # ================= RUN =================
 app.run()
