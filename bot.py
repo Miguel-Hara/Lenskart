@@ -152,20 +152,44 @@ async def callbacks(client, cb):
         await cb.message.reply("🆘 Send your issue in ONE message")
         return
 
+    # ---------- CONFIRM ----------
     if uid == ADMIN_ID and data.startswith("admin_confirm"):
         oid = data.split(":")[1]
+
         cur.execute("UPDATE orders SET status='CONFIRMED' WHERE order_id=%s",(oid,))
         conn.commit()
 
-        cur.execute("SELECT telegram_id FROM orders WHERE order_id=%s",(oid,))
-        user_id = cur.fetchone()[0]
+        cur.execute("""
+            SELECT u.username, o.telegram_id, o.product_link, o.mrp, o.final_price
+            FROM orders o
+            JOIN users u ON u.telegram_id=o.telegram_id
+            WHERE o.order_id=%s
+        """, (oid,))
+        username, user_id, link, mrp, price = cur.fetchone()
 
-        await client.send_message(user_id, "✅ Order confirmed 🎉")
+        summary = (
+            "💰 *PAYMENT RECEIVED*\n\n"
+            f"🆔 Order ID: `{oid}`\n"
+            f"👤 User: @{username if username else 'NoUsername'}\n"
+            f"🆔 User ID: `{user_id}`\n\n"
+            f"💸 MRP: ₹{mrp}\n"
+            f"🔥 Discount: 75% OFF\n"
+            f"✅ Pay Amount: ₹{price}\n\n"
+            f"🔗 Product:\n{link}"
+        )
+
+        # send same summary to user
+        await client.send_message(user_id, summary)
+
+        # keep buttons for admin
         await cb.message.edit_reply_markup(status_buttons(oid))
+        await cb.answer("Order confirmed")
         return
 
+    # ---------- REJECT ----------
     if uid == ADMIN_ID and data.startswith("admin_reject"):
         oid = data.split(":")[1]
+
         cur.execute("UPDATE orders SET status='REJECTED' WHERE order_id=%s",(oid,))
         conn.commit()
 
@@ -179,6 +203,7 @@ async def callbacks(client, cb):
         await cb.message.edit_reply_markup(None)
         return
 
+    # ---------- STATUS ----------
     if uid == ADMIN_ID and data.startswith("status:"):
         _, status, oid = data.split(":")
         cur.execute("UPDATE orders SET status=%s WHERE order_id=%s",(status,oid))
@@ -226,6 +251,7 @@ async def payment(client, msg):
     )
 
     await msg.forward(ADMIN_ID)
+
     await client.send_message(
         ADMIN_ID,
         summary,
@@ -249,7 +275,6 @@ async def payment(client, msg):
 async def private_all(client, msg):
     uid = msg.from_user.id
 
-    # ---- SUPPORT ----
     if uid in support_waiting:
         support_waiting.discard(uid)
 
@@ -266,7 +291,6 @@ async def private_all(client, msg):
         await msg.reply("✅ Support message sent to admin")
         return
 
-    # ---- PRODUCT LINK ----
     if msg.text and "lenskart.com" in msg.text:
         mrp_waiting[uid] = msg.text
         await msg.reply_photo(
@@ -279,7 +303,6 @@ async def private_all(client, msg):
         )
         return
 
-    # ---- MRP ----
     if uid in mrp_waiting and msg.text.isdigit():
         mrp = int(msg.text)
         link = mrp_waiting.pop(uid)
