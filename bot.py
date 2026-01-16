@@ -51,7 +51,7 @@ conn.commit()
 
 # ================= STATE =================
 support_waiting = set()
-support_map = {}      # forwarded_msg_id -> user_id
+support_map = {}     # forwarded_msg_id -> user_id
 mrp_waiting = {}
 
 # ================= PRICE SLABS =================
@@ -83,7 +83,7 @@ def status_buttons(oid):
 @app.on_message(filters.command("start"))
 async def start(client, msg):
     if msg.from_user.id == ADMIN_ID:
-        await msg.reply("👑 Admin panel active.\nOrders & support yahin aayenge.")
+        await msg.reply("👑 Admin panel active.\nOrders & payments yahin aayenge.")
         return
 
     cur.execute(
@@ -95,14 +95,14 @@ async def start(client, msg):
     await msg.reply_photo(
         START_IMAGE,
         caption=(
-            "👓 *Welcome to Lenskart Order Bot*\n\n"
-            "Yahan aap original Lenskart frames discounted price par order kar sakte ho 💸\n\n"
-            "*Steps samjho:*\n"
+            "👓 *Lenskart Order Bot*\n\n"
+            "Original Lenskart frames discounted price par 💸\n\n"
+            "👉 *Steps:*\n"
             "1️⃣ Product link bhejo\n"
             "2️⃣ Original MRP likho\n"
-            "3️⃣ Discounted payment karo\n"
+            "3️⃣ Payment karo\n"
             "4️⃣ Order updates pao 📦\n\n"
-            "Neeche option select karo 👇"
+            "Option choose karo 👇"
         ),
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🛒 New Order", callback_data="buy")],
@@ -110,11 +110,11 @@ async def start(client, msg):
         ])
     )
 
-# ================= TRACK COMMAND =================
+# ================= TRACK =================
 @app.on_message(filters.command("track"))
 async def track(client, msg):
     if len(msg.command) != 2:
-        await msg.reply("❌ Usage:\n`/track ORDER_ID`\nExample: `/track 8f3a91cd`")
+        await msg.reply("Usage: `/track ORDER_ID`")
         return
 
     oid = msg.command[1]
@@ -124,14 +124,10 @@ async def track(client, msg):
     )
     row = cur.fetchone()
     if not row:
-        await msg.reply("❌ Aisa koi order nahi mila.")
+        await msg.reply("❌ Koi aisa order nahi mila.")
         return
 
-    await msg.reply(
-        f"📦 *Order Status*\n\n"
-        f"🆔 Order ID: `{oid}`\n"
-        f"📌 Status: *{row[0]}*"
-    )
+    await msg.reply(f"📦 Order ID: `{oid}`\nStatus: *{row[0]}*")
 
 # ================= CALLBACKS =================
 @app.on_callback_query()
@@ -139,7 +135,7 @@ async def callbacks(client, cb):
     uid = cb.from_user.id
     data = cb.data
 
-    # ---------- ADMIN STATUS UPDATE ----------
+    # ===== ADMIN STATUS UPDATE =====
     if uid == ADMIN_ID and data.startswith("status:"):
         _, status, oid = data.split(":")
         cur.execute("UPDATE orders SET status=%s WHERE order_id=%s",(status,oid))
@@ -149,22 +145,16 @@ async def callbacks(client, cb):
         user_id = cur.fetchone()[0]
 
         msgs = {
-            "PACKED":"📦 Aapka order pack ho chuka hai",
+            "PACKED":"📦 Aapka order pack ho gaya hai",
             "ON_THE_WAY":"🚚 Aapka order raste mein hai",
             "DELIVERED":"📬 Aapka order deliver ho gaya 🎉"
         }
 
         await client.send_message(user_id, msgs[status])
-
-        try:
-            await client.send_message(LOG_CHANNEL_ID, f"Order {oid} → {status}")
-        except:
-            pass
-
         await cb.answer("Status updated")
         return
 
-    # ---------- ADMIN CONFIRM ----------
+    # ===== ADMIN CONFIRM =====
     if uid == ADMIN_ID and data.startswith("admin_confirm"):
         oid = data.split(":")[1]
         cur.execute("UPDATE orders SET status='CONFIRMED' WHERE order_id=%s",(oid,))
@@ -181,48 +171,65 @@ async def callbacks(client, cb):
         await cb.message.edit_reply_markup(status_buttons(oid))
         return
 
-    # ---------- USER FLOW ----------
-    if data == "buy":
-        await cb.message.reply(
-            "🔗 *Step 1*\nLenskart product ka link bhejo"
+    # ===== ADMIN REJECT =====
+    if uid == ADMIN_ID and data.startswith("admin_reject"):
+        oid = data.split(":")[1]
+        cur.execute("UPDATE orders SET status='REJECTED' WHERE order_id=%s",(oid,))
+        conn.commit()
+
+        cur.execute("SELECT telegram_id FROM orders WHERE order_id=%s",(oid,))
+        user_id = cur.fetchone()[0]
+
+        await client.send_message(
+            user_id,
+            "❌ *Order Rejected*\n\n"
+            "Aapka order reject ho chuka hai.\n"
+            "💸 Refund original payment method par jaldi aa jaayega."
         )
+
+        await cb.message.edit_reply_markup(None)
+        await cb.answer("Order rejected")
+        return
+
+    # ===== USER FLOW =====
+    if data == "buy":
+        await cb.message.reply("🔗 Step 1: Lenskart product link bhejo")
 
     elif data == "support":
         support_waiting.add(uid)
         await cb.message.reply(
-            "🆘 *Support*\n\n"
-            "Apni problem ek hi message me bhejo.\n"
-            "Text, photo, sticker – sab chalega 👍"
+            "🆘 Apni problem ek hi message me bhejo.\n"
+            "Text / photo / sticker – sab allowed 👍"
         )
 
-# ================= ALL PRIVATE MSG HANDLER =================
+# ================= ALL PRIVATE =================
 @app.on_message(filters.private)
-async def all_private(client, msg):
+async def private_all(client, msg):
     uid = msg.from_user.id
 
-    # ---------- SUPPORT ----------
+    # ----- SUPPORT -----
     if uid in support_waiting:
         support_waiting.discard(uid)
         fwd = await msg.forward(ADMIN_ID)
         support_map[fwd.id] = uid
-        await msg.reply("✅ Aapka message support team ko bhej diya gaya hai.")
+        await msg.reply("✅ Support message admin ko bhej diya gaya.")
         return
 
-    # ---------- PRODUCT LINK ----------
+    # ----- PRODUCT LINK -----
     if msg.text and "lenskart.com" in msg.text:
         mrp_waiting[uid] = msg.text
         await msg.reply_photo(
             MRP_HELP_IMAGE,
             caption=(
                 "🧾 *Step 2 – MRP*\n\n"
-                "Sirf *original MRP* likho (discounted nahi)\n"
+                "Sirf original MRP likho (discounted nahi)\n"
                 "Example:\nMRP ₹3900 → Discount ₹3100\n"
                 "Send: *3900*"
             )
         )
         return
 
-    # ---------- MRP ----------
+    # ----- MRP -----
     if uid in mrp_waiting and msg.text and msg.text.isdigit():
         mrp = int(msg.text)
         link = mrp_waiting.pop(uid)
@@ -250,7 +257,7 @@ async def all_private(client, msg):
                 "QR scan karke payment karo.\n"
                 "Payment ke baad screenshot yahin bhejo 📸\n\n"
                 "⏳ Uske baad bas wait karo —\n"
-                "aapka order *confirm ya reject* hone ka message yahin mil jaayega."
+                "order *confirm ya reject* hone ka message yahin milega."
             )
         )
         return
@@ -270,17 +277,21 @@ async def payment(client, msg):
 
     oid = row[0]
     await msg.forward(ADMIN_ID)
+
     await client.send_message(
         ADMIN_ID,
-        f"💰 Payment received\nOrder ID: {oid}",
+        f"💰 *PAYMENT RECEIVED*\n\nOrder ID: `{oid}`",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Confirm Order", callback_data=f"admin_confirm:{oid}")]
+            [
+                InlineKeyboardButton("✅ Confirm Order", callback_data=f"admin_confirm:{oid}"),
+                InlineKeyboardButton("❌ Reject Order", callback_data=f"admin_reject:{oid}")
+            ]
         ])
     )
 
     await msg.reply(
-        "✅ Payment submit ho gaya hai.\n"
-        "Please wait, confirmation ya rejection ka message yahin aayega ⏳"
+        "✅ Payment mil gaya hai.\n"
+        "Payment verify hone ke baad update yahin mil jaayega ⏳"
     )
 
 # ================= ADMIN SUPPORT REPLY =================
