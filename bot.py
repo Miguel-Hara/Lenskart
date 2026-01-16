@@ -103,18 +103,17 @@ async def help_cmd(client, msg):
     await msg.reply(
         "How to use:\n\n"
         "1. Send Lenskart product link\n"
-        "2. Send original MRP\n"
+        "2. Send original MRP (min ₹3000)\n"
         "3. Pay via QR\n"
         "4. Send payment screenshot\n\n"
-        "Track: /track ORDER_ID\n"
+        "Track order: /track ORDER_ID\n"
         "Support: /support"
     )
 
 # ================= SUPPORT COMMAND =================
 @app.on_message(filters.command("support") & filters.private)
-async def support_command(client, msg):
-    uid = msg.from_user.id
-    support_waiting.add(uid)
+async def support_cmd(client, msg):
+    support_waiting.add(msg.from_user.id)
     await msg.reply("🆘 Send your issue in ONE message")
 
 # ================= TRACK =================
@@ -140,7 +139,9 @@ async def track(client, msg):
 # ================= ORDERS (ADMIN) =================
 @app.on_message(filters.command("orders") & filters.user(ADMIN_ID))
 async def orders_cmd(client, msg):
-    cur.execute("SELECT order_id, telegram_id, status FROM orders ORDER BY order_id DESC LIMIT 20")
+    cur.execute(
+        "SELECT order_id, telegram_id, status FROM orders ORDER BY order_id DESC LIMIT 20"
+    )
     rows = cur.fetchall()
 
     if not rows:
@@ -153,19 +154,19 @@ async def orders_cmd(client, msg):
 
     await msg.reply(text)
 
-# ================= BROADCAST (ADMIN) =================
+# ================= BROADCAST =================
 @app.on_message(filters.command("broadcast") & filters.user(ADMIN_ID))
-async def broadcast_start(client, msg):
+async def broadcast_cmd(client, msg):
     global broadcast_waiting
     broadcast_waiting = True
-    await msg.reply("Send the message to broadcast")
+    await msg.reply("Send message to broadcast")
 
 # ================= ADMIN REPLY =================
 @app.on_message(filters.command("reply") & filters.user(ADMIN_ID))
 async def admin_reply(client, msg):
     parts = msg.text.split(maxsplit=2)
     if len(parts) < 3:
-        await msg.reply("Usage: /reply user_id message")
+        await msg.reply("Usage:\n/reply user_id message")
         return
 
     await client.send_message(int(parts[1]), parts[2])
@@ -185,29 +186,6 @@ async def callbacks(client, cb):
         support_waiting.add(uid)
         await cb.message.reply("🆘 Send your issue in ONE message")
         return
-
-# ================= SUPPORT HANDLER =================
-@app.on_message(filters.private & filters.text)
-async def support_handler(client, msg):
-    uid = msg.from_user.id
-
-    if uid not in support_waiting:
-        return
-
-    support_waiting.discard(uid)
-
-    await msg.forward(ADMIN_ID)
-
-    await client.send_message(
-        ADMIN_ID,
-        f"SUPPORT MESSAGE RECEIVED\n\n"
-        f"User ID: {uid}\n"
-        f"Username: @{msg.from_user.username if msg.from_user.username else 'NoUsername'}\n\n"
-        f"Reply using:\n"
-        f"/reply {uid} your message"
-    )
-
-    await msg.reply("Support message sent to admin")
 
 # ================= PAYMENT =================
 @app.on_message(filters.photo & filters.private)
@@ -229,9 +207,9 @@ async def payment(client, msg):
     oid, link, mrp, price, username = row
 
     summary = (
-        f"PAYMENT RECEIVED\n\n"
+        "PAYMENT RECEIVED\n\n"
         f"Order ID: {oid}\n"
-        f"User: @{username if username else 'NoUsername'}\n"
+        f"User: @{username or 'NoUsername'}\n"
         f"User ID: {uid}\n\n"
         f"MRP: ₹{mrp}\n"
         f"Pay Amount: ₹{price}\n\n"
@@ -252,6 +230,73 @@ async def payment(client, msg):
 
     await client.send_message(LOG_CHANNEL_ID, summary)
     await msg.reply("Payment received. Please wait.")
+
+# ================= PRIVATE TEXT HANDLER (ONLY ONE) =================
+@app.on_message(filters.private & filters.text)
+async def private_text_handler(client, msg):
+    global broadcast_waiting
+    uid = msg.from_user.id
+    text = msg.text.strip()
+
+    # Broadcast
+    if broadcast_waiting and uid == ADMIN_ID:
+        broadcast_waiting = False
+        cur.execute("SELECT telegram_id FROM users")
+        for (u,) in cur.fetchall():
+            try:
+                await client.send_message(u, text)
+            except:
+                pass
+        await msg.reply("Broadcast sent")
+        return
+
+    # Support
+    if uid in support_waiting:
+        support_waiting.discard(uid)
+
+        await msg.forward(ADMIN_ID)
+        await client.send_message(
+            ADMIN_ID,
+            f"SUPPORT MESSAGE RECEIVED\n\n"
+            f"User ID: {uid}\n"
+            f"Username: @{msg.from_user.username or 'NoUsername'}\n\n"
+            f"Reply using:\n/reply {uid} your message"
+        )
+
+        await msg.reply("Support message sent to admin")
+        return
+
+    # Product link
+    if "lenskart.com" in text:
+        mrp_waiting[uid] = text
+        await msg.reply_photo(MRP_HELP_IMAGE, caption="Send original MRP (minimum ₹3000)")
+        return
+
+    # MRP
+    if uid in mrp_waiting and text.isdigit():
+        mrp = int(text)
+        link = mrp_waiting.pop(uid)
+
+        if mrp < MIN_MRP:
+            await msg.reply("Minimum MRP ₹3000 required")
+            return
+
+        price = int(mrp * (100 - DISCOUNT_PERCENT) / 100)
+        oid = str(uuid.uuid4())[:8]
+
+        cur.execute(
+            "INSERT INTO orders VALUES (%s,%s,%s,%s,%s,%s)",
+            (oid, uid, link, mrp, price, "PAYMENT_WAITING")
+        )
+        conn.commit()
+
+        await msg.reply_photo(
+            QR_IMAGE,
+            caption=f"Order ID: {oid}\nPay Amount: ₹{price}\nSend screenshot"
+        )
+        return
+
+    await msg.reply("Please use buttons or /help")
 
 # ================= RUN =================
 app.run()
