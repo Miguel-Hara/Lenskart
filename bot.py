@@ -3,6 +3,7 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import os, uuid, psycopg2
 import pyrogram.utils
 
+# ================= FIX CHANNEL RANGE =================
 pyrogram.utils.MIN_CHANNEL_ID = -1009147483647
 
 # ================= ENV =================
@@ -13,9 +14,9 @@ API_HASH = os.getenv("API_HASH")
 DATABASE_URL = os.getenv("DATABASE_URL")
 LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID"))
 
-# ================= BUSINESS =================
+# ================= BUSINESS RULE =================
 MIN_MRP = 3000
-DISCOUNT_PERCENT = 75
+DISCOUNT_PERCENT = 75  # 75% OFF + ₹1 extra
 
 # ================= IMAGES =================
 START_IMAGE = "https://files.catbox.moe/5t348b.jpg"
@@ -33,6 +34,7 @@ app = Client(
 conn = psycopg2.connect(DATABASE_URL, sslmode="require")
 cur = conn.cursor()
 
+# USERS
 cur.execute("""
 CREATE TABLE IF NOT EXISTS users (
     telegram_id BIGINT PRIMARY KEY,
@@ -40,6 +42,7 @@ CREATE TABLE IF NOT EXISTS users (
 )
 """)
 
+# ORDERS (explicit columns – safe)
 cur.execute("""
 CREATE TABLE IF NOT EXISTS orders (
     order_id TEXT PRIMARY KEY,
@@ -55,7 +58,7 @@ conn.commit()
 
 # ================= STATES =================
 support_waiting = set()
-order_state = {}  # uid -> data
+order_state = {}
 
 # ================= STATUS BUTTONS =================
 def status_buttons(oid):
@@ -73,7 +76,7 @@ def status_buttons(oid):
 @app.on_message(filters.command("start"))
 async def start(client, msg):
     cur.execute(
-        "INSERT INTO users VALUES (%s,%s) ON CONFLICT DO NOTHING",
+        "INSERT INTO users (telegram_id, username) VALUES (%s,%s) ON CONFLICT DO NOTHING",
         (msg.from_user.id, msg.from_user.username)
     )
     conn.commit()
@@ -84,7 +87,7 @@ async def start(client, msg):
             "🕶️ *Lenskart Order Bot*\n\n"
             "• Flat 75% OFF + ₹1 extra\n"
             "• No advance payment\n"
-            "• Admin assisted order\n\n"
+            "• Admin assisted ordering\n\n"
             "Choose an option ⬇️"
         ),
         reply_markup=InlineKeyboardMarkup([
@@ -93,9 +96,22 @@ async def start(client, msg):
         ])
     )
 
+# ================= HELP =================
+@app.on_message(filters.command("help"))
+async def help_cmd(client, msg):
+    await msg.reply(
+        "How to order:\n\n"
+        "1. Send Lenskart product link\n"
+        "2. Send ORIGINAL MRP (₹3000+)\n"
+        "3. Type lens type\n"
+        "4. Send power screenshot or skip\n\n"
+        "Track: /track ORDER_ID\n"
+        "Support: /support"
+    )
+
 # ================= SUPPORT =================
 @app.on_message(filters.command("support"))
-async def support(client, msg):
+async def support_cmd(client, msg):
     support_waiting.add(msg.from_user.id)
     await msg.reply("🆘 Send your issue in ONE message")
 
@@ -119,12 +135,27 @@ async def track(client, msg):
 
     await msg.reply(f"📦 Order ID: `{oid}`\n📍 Status: {row[0]}")
 
+# ================= ADMIN REPLY (RESTORED) =================
+@app.on_message(filters.command("reply") & filters.user(ADMIN_ID))
+async def admin_reply(client, msg):
+    parts = msg.text.split(maxsplit=2)
+    if len(parts) < 3:
+        await msg.reply("Usage: /reply USER_ID message")
+        return
+
+    user_id = int(parts[1])
+    text = parts[2]
+
+    await client.send_message(user_id, text)
+    await msg.reply("✅ Reply sent")
+
 # ================= CALLBACKS =================
 @app.on_callback_query()
 async def callbacks(client, cb):
     uid = cb.from_user.id
     data = cb.data
 
+    # USER
     if data == "buy":
         await cb.message.reply("🔗 Send Lenskart product link")
         return
@@ -134,7 +165,7 @@ async def callbacks(client, cb):
         await cb.message.reply("🆘 Send your issue in ONE message")
         return
 
-    # ---------- NO POWER ----------
+    # NO POWER
     if data == "no_power":
         await send_to_admin(client, cb.from_user, uid, power_provided=False)
         await cb.message.reply(
@@ -144,7 +175,7 @@ async def callbacks(client, cb):
         )
         return
 
-    # ---------- ADMIN CONFIRM ----------
+    # ADMIN CONFIRM
     if uid == ADMIN_ID and data.startswith("admin_confirm:"):
         oid = data.split(":")[1]
         cur.execute("UPDATE orders SET status='CONFIRMED' WHERE order_id=%s", (oid,))
@@ -157,7 +188,7 @@ async def callbacks(client, cb):
         await cb.message.edit_reply_markup(status_buttons(oid))
         return
 
-    # ---------- ADMIN REJECT ----------
+    # ADMIN REJECT
     if uid == ADMIN_ID and data.startswith("admin_reject:"):
         oid = data.split(":")[1]
         cur.execute("UPDATE orders SET status='REJECTED' WHERE order_id=%s", (oid,))
@@ -170,7 +201,7 @@ async def callbacks(client, cb):
         await cb.message.edit_reply_markup(None)
         return
 
-    # ---------- STATUS UPDATE ----------
+    # STATUS UPDATE
     if uid == ADMIN_ID and data.startswith("status:"):
         _, status, oid = data.split(":")
         cur.execute("UPDATE orders SET status=%s WHERE order_id=%s", (status, oid))
@@ -195,7 +226,6 @@ async def power_photo(client, msg):
     uid = msg.from_user.id
 
     if uid in order_state and order_state[uid].get("lens"):
-        # forward power image to admin
         await msg.forward(ADMIN_ID)
         await send_to_admin(client, msg.from_user, uid, power_provided=True)
 
@@ -211,12 +241,14 @@ async def private_text(client, msg):
     uid = msg.from_user.id
     text = msg.text.strip()
 
+    # Support
     if uid in support_waiting:
         support_waiting.discard(uid)
         await msg.forward(ADMIN_ID)
         await msg.reply("✅ Support message sent")
         return
 
+    # Product link
     if "lenskart.com" in text:
         order_state[uid] = {"link": text}
         await msg.reply_photo(
@@ -230,6 +262,7 @@ async def private_text(client, msg):
         )
         return
 
+    # MRP
     if uid in order_state and "mrp" not in order_state[uid] and text.isdigit():
         mrp = int(text)
         if mrp < MIN_MRP:
@@ -241,10 +274,14 @@ async def private_text(client, msg):
 
         await msg.reply(
             "✍️ *Type your Lens Type*\n\n"
-            "Example:\n• Single Vision\n• Blue Cut\n• Progressive"
+            "Example:\n"
+            "• Single Vision\n"
+            "• Blue Cut\n"
+            "• Progressive"
         )
         return
 
+    # Lens type
     if uid in order_state and "mrp" in order_state[uid] and "lens" not in order_state[uid]:
         order_state[uid]["lens"] = text
 
@@ -263,7 +300,11 @@ async def send_to_admin(client, user, uid, power_provided: bool):
     oid = str(uuid.uuid4())[:8]
 
     cur.execute(
-        "INSERT INTO orders VALUES (%s,%s,%s,%s,%s,%s,%s)",
+        """
+        INSERT INTO orders
+        (order_id, telegram_id, product_link, lens_type, mrp, final_price, status)
+        VALUES (%s,%s,%s,%s,%s,%s,%s)
+        """,
         (oid, uid, info["link"], info["lens"], info["mrp"], info["price"], "PENDING_ADMIN")
     )
     conn.commit()
