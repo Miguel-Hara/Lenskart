@@ -176,6 +176,7 @@ async def callbacks(client, cb):
                 f"Order ID: `{oid}`\n"
                 f"Pay Amount: ₹{info['price']}\n\n"
                 "📸 You can send payment screenshot\n"
+                "📸 You can send your power screenshot so payment will be done later.\n"
                 "OR send any image if you don’t want to pay now.\n\n"
                 "📞 Admin will contact you once order details are received."
             )
