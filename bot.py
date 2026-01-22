@@ -35,7 +35,6 @@ app = Client(
 conn = psycopg2.connect(DATABASE_URL, sslmode="require")
 cur = conn.cursor()
 
-# USERS
 cur.execute("""
 CREATE TABLE IF NOT EXISTS users (
     telegram_id BIGINT PRIMARY KEY,
@@ -43,7 +42,6 @@ CREATE TABLE IF NOT EXISTS users (
 )
 """)
 
-# ORDERS
 cur.execute("""
 CREATE TABLE IF NOT EXISTS orders (
     order_id TEXT PRIMARY KEY,
@@ -55,7 +53,6 @@ CREATE TABLE IF NOT EXISTS orders (
 )
 """)
 
-# SAFE MIGRATION
 cur.execute("""
 SELECT column_name FROM information_schema.columns
 WHERE table_name='orders' AND column_name='lens_type'
@@ -85,7 +82,7 @@ def status_buttons(oid):
 @app.on_message(filters.command("start"))
 async def start(client, msg):
     cur.execute(
-        "INSERT INTO users VALUES (%s,%s) ON CONFLICT DO NOTHING",
+        "INSERT INTO users (telegram_id, username) VALUES (%s,%s) ON CONFLICT DO NOTHING",
         (msg.from_user.id, msg.from_user.username)
     )
     conn.commit()
@@ -94,11 +91,11 @@ async def start(client, msg):
         START_IMAGE,
         caption=(
             "🕶️ <b>Lenskart Order Bot</b>\n\n"
-            "💥 <b>Flat 75% OFF + ₹1 extra</b>\n"
+            "• Flat 75% OFF + ₹1 extra\n"
             "<i>75% discount + ₹1 aur kam</i>\n\n"
-            "💸 <b>No advance payment</b>\n"
+            "• No advance payment\n"
             "<i>Koi advance payment nahi</i>\n\n"
-            "👇 <b>Please choose an option</b>\n"
+            "<b>Choose an option ⬇️</b>\n"
             "<i>Neeche option select karein</i>"
         ),
         reply_markup=InlineKeyboardMarkup([
@@ -113,7 +110,7 @@ async def support(client, msg):
     support_waiting.add(msg.from_user.id)
     await msg.reply(
         "🆘 <b>Support</b>\n\n"
-        "Please send your issue in ONE message.\n"
+        "Send your issue in ONE message.\n"
         "<i>Apni problem ek hi message mein bhejein</i>"
     )
 
@@ -165,7 +162,7 @@ async def callbacks(client, cb):
 
     if data == "buy":
         await cb.message.reply(
-            "🔗 <b>Please send the Lenskart product link</b>\n"
+            "🔗 Send Lenskart product link\n"
             "<i>Lenskart ka product link bhejein</i>"
         )
         return
@@ -173,8 +170,18 @@ async def callbacks(client, cb):
     if data == "support":
         support_waiting.add(uid)
         await cb.message.reply(
-            "🆘 Send your issue in one message\n"
+            "🆘 Send your issue in ONE message\n"
             "<i>Apni problem ek message mein likhein</i>"
+        )
+        return
+
+    if data == "no_power":
+        await send_to_admin(client, cb.from_user, uid, power_provided=False)
+        await cb.message.reply(
+            "✅ Order details sent.\n"
+            "<i>Order details bhej di gayi hain</i>\n\n"
+            "Admin will contact you soon.\n"
+            "<i>Admin aapse jaldi contact karega</i>"
         )
         return
 
@@ -188,8 +195,8 @@ async def callbacks(client, cb):
 
         await client.send_message(
             user_id,
-            "✅ <b>Your order has been confirmed</b>\n"
-            "<i>Aapka order confirm ho gaya hai</i>"
+            "✅ Order confirmed by admin.\n"
+            "<i>Admin ne order confirm kar diya</i>"
         )
         await cb.message.edit_reply_markup(status_buttons(oid))
         return
@@ -204,8 +211,8 @@ async def callbacks(client, cb):
 
         await client.send_message(
             user_id,
-            "❌ <b>Your order was rejected</b>\n"
-            "<i>Aapka order reject kar diya gaya</i>"
+            "❌ Order rejected.\n"
+            "<i>Order reject kar diya gaya</i>"
         )
         await cb.message.edit_reply_markup(None)
         return
@@ -218,13 +225,14 @@ async def callbacks(client, cb):
         cur.execute("SELECT telegram_id FROM orders WHERE order_id=%s", (oid,))
         user_id = cur.fetchone()[0]
 
-        messages = {
-            "PACKED": "📦 <b>Order packed</b>\n<i>Order pack ho gaya</i>",
-            "ON_THE_WAY": "🚚 <b>Order on the way</b>\n<i>Order raste mein hai</i>",
-            "DELIVERED": "📬 <b>Order delivered</b>\n<i>Order deliver ho gaya</i>"
-        }
-
-        await client.send_message(user_id, messages[status])
+        await client.send_message(
+            user_id,
+            {
+                "PACKED": "📦 Order packed\n<i>Order pack ho gaya</i>",
+                "ON_THE_WAY": "🚚 Order on the way\n<i>Order raste mein hai</i>",
+                "DELIVERED": "📬 Order delivered\n<i>Order deliver ho gaya</i>"
+            }[status]
+        )
 
 # ================= POWER PHOTO =================
 @app.on_message(filters.photo & filters.private)
@@ -232,12 +240,11 @@ async def power_photo(client, msg):
     uid = msg.from_user.id
     if uid in order_state and "lens" in order_state[uid]:
         await msg.forward(ADMIN_ID)
-        await send_to_admin(client, msg.from_user, uid)
+        await send_to_admin(client, msg.from_user, uid, power_provided=True)
         await msg.reply(
-            "✅ <b>Image received successfully</b>\n"
+            "✅ Image received.\n"
             "<i>Image mil gayi hai</i>\n\n"
-            "📞 Admin will contact you soon\n"
-            "<i>Admin aapse jaldi contact karega</i>"
+            "Admin will contact you soon."
         )
 
 # ================= PRIVATE TEXT =================
@@ -248,9 +255,19 @@ async def private_text(client, msg):
 
     if uid in support_waiting:
         support_waiting.discard(uid)
+
         await msg.forward(ADMIN_ID)
+        await client.send_message(
+            ADMIN_ID,
+            f"📨 <b>SUPPORT MESSAGE RECEIVED</b>\n\n"
+            f"User ID: <code>{uid}</code>\n"
+            f"Username: @{msg.from_user.username or 'NoUsername'}\n\n"
+            f"<b>Reply using:</b>\n"
+            f"<code>/reply {uid} your message</code>"
+        )
+
         await msg.reply(
-            "✅ Support message sent\n"
+            "✅ Support message sent.\n"
             "<i>Support message bhej diya gaya</i>"
         )
         return
@@ -260,12 +277,11 @@ async def private_text(client, msg):
         await msg.reply_photo(
             MRP_HELP_IMAGE,
             caption=(
-                "📌 <b>Send the ORIGINAL MRP</b>\n"
+                "📌 <b>Send ORIGINAL MRP</b>\n"
                 "<i>Original MRP bhejein</i>\n\n"
-                "• Type only numbers (example: <code>3999</code>)\n"
+                "• Type only number (example: 3999)\n"
                 "<i>Sirf number likhein</i>\n"
-                "• Minimum ₹3000 required\n"
-                "<i>Minimum ₹3000 hona chahiye</i>"
+                "• Minimum ₹3000"
             )
         )
         return
@@ -274,7 +290,7 @@ async def private_text(client, msg):
         mrp = int(text)
         if mrp < MIN_MRP:
             await msg.reply(
-                "❌ <b>Minimum MRP must be ₹3000</b>\n"
+                "❌ Minimum MRP ₹3000\n"
                 "<i>Minimum MRP ₹3000 hona chahiye</i>"
             )
             return
@@ -283,7 +299,7 @@ async def private_text(client, msg):
         order_state[uid].update({"mrp": mrp, "price": price})
 
         await msg.reply(
-            "✍️ <b>Please type your Lens Type</b>\n"
+            "✍️ Type your Lens Type\n"
             "<i>Apna lens type likhein</i>\n\n"
             "Example:\n• Single Vision\n• Blue Cut\n• Progressive"
         )
@@ -292,12 +308,15 @@ async def private_text(client, msg):
     if uid in order_state and "mrp" in order_state[uid] and "lens" not in order_state[uid]:
         order_state[uid]["lens"] = text
         await msg.reply(
-            "📄 <b>Please send your power screenshot</b>\n"
-            "<i>Agar power nahi hai to koi bhi image bhej sakte hain</i>"
+            "📄 Send power screenshot\n"
+            "<i>Agar power nahi hai to koi bhi image bhej sakte hain</i>",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("❌ I don’t have a power", callback_data="no_power")]
+            ])
         )
 
 # ================= SEND TO ADMIN =================
-async def send_to_admin(client, user, uid):
+async def send_to_admin(client, user, uid, power_provided: bool):
     info = order_state.pop(uid)
     oid = str(uuid.uuid4())[:8]
 
@@ -311,15 +330,18 @@ async def send_to_admin(client, user, uid):
     )
     conn.commit()
 
+    power_text = "Provided" if power_provided else "Not provided"
+
     admin_msg = (
-        "💰 <b>ORDER RECEIVED</b>\n\n"
-        f"<b>Order ID:</b> {oid}\n"
-        f"<b>User:</b> @{user.username or 'NoUsername'}\n"
-        f"<b>User ID:</b> {uid}\n\n"
-        f"<b>Lens Type:</b> {info['lens']}\n"
-        f"<b>MRP:</b> ₹{info['mrp']}\n"
-        f"<b>Pay Amount:</b> ₹{info['price']}\n\n"
-        f"<b>Product Link:</b>\n{info['link']}"
+        "💰 <b>PAYMENT RECEIVED</b>\n\n"
+        f"Order ID: {oid}\n"
+        f"User: @{user.username or 'NoUsername'}\n"
+        f"User ID: {uid}\n\n"
+        f"Lens Type: {info['lens']}\n"
+        f"Power: {power_text}\n"
+        f"MRP: ₹{info['mrp']}\n"
+        f"Pay Amount: ₹{info['price']}\n\n"
+        f"Product:\n{info['link']}"
     )
 
     await client.send_message(
