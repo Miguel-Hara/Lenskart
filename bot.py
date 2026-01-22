@@ -3,7 +3,6 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import os, uuid, psycopg2
 import pyrogram.utils
 
-# ================= FIX CHANNEL RANGE =================
 pyrogram.utils.MIN_CHANNEL_ID = -1009147483647
 
 # ================= ENV =================
@@ -14,12 +13,13 @@ API_HASH = os.getenv("API_HASH")
 DATABASE_URL = os.getenv("DATABASE_URL")
 LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID"))
 
-# ================= BUSINESS RULE =================
+# ================= BUSINESS =================
 MIN_MRP = 3000
 DISCOUNT_PERCENT = 75
 
 # ================= IMAGES =================
 START_IMAGE = "https://files.catbox.moe/5t348b.jpg"
+MRP_HELP_IMAGE = "https://files.catbox.moe/orp6r5.jpg"
 
 # ================= BOT =================
 app = Client(
@@ -55,7 +55,7 @@ conn.commit()
 
 # ================= STATES =================
 support_waiting = set()
-order_state = {}
+order_state = {}  # uid -> data
 
 # ================= STATUS BUTTONS =================
 def status_buttons(oid):
@@ -107,7 +107,10 @@ async def track(client, msg):
         return
 
     oid = msg.command[1]
-    cur.execute("SELECT status FROM orders WHERE order_id=%s", (oid,))
+    cur.execute(
+        "SELECT status FROM orders WHERE order_id=%s AND telegram_id=%s",
+        (oid, msg.from_user.id)
+    )
     row = cur.fetchone()
 
     if not row:
@@ -131,8 +134,9 @@ async def callbacks(client, cb):
         await cb.message.reply("🆘 Send your issue in ONE message")
         return
 
+    # ---------- NO POWER ----------
     if data == "no_power":
-        await proceed_to_admin(client, cb.from_user, uid)
+        await send_to_admin(client, cb.from_user, uid, power_provided=False)
         await cb.message.reply(
             "✅ Order details sent.\n\n"
             "Admin will contact you soon,\n"
@@ -140,6 +144,7 @@ async def callbacks(client, cb):
         )
         return
 
+    # ---------- ADMIN CONFIRM ----------
     if uid == ADMIN_ID and data.startswith("admin_confirm:"):
         oid = data.split(":")[1]
         cur.execute("UPDATE orders SET status='CONFIRMED' WHERE order_id=%s", (oid,))
@@ -152,6 +157,7 @@ async def callbacks(client, cb):
         await cb.message.edit_reply_markup(status_buttons(oid))
         return
 
+    # ---------- ADMIN REJECT ----------
     if uid == ADMIN_ID and data.startswith("admin_reject:"):
         oid = data.split(":")[1]
         cur.execute("UPDATE orders SET status='REJECTED' WHERE order_id=%s", (oid,))
@@ -164,6 +170,7 @@ async def callbacks(client, cb):
         await cb.message.edit_reply_markup(None)
         return
 
+    # ---------- STATUS UPDATE ----------
     if uid == ADMIN_ID and data.startswith("status:"):
         _, status, oid = data.split(":")
         cur.execute("UPDATE orders SET status=%s WHERE order_id=%s", (status, oid))
@@ -182,14 +189,18 @@ async def callbacks(client, cb):
         )
         return
 
-# ================= PHOTO = POWER =================
+# ================= POWER PHOTO =================
 @app.on_message(filters.photo & filters.private)
 async def power_photo(client, msg):
     uid = msg.from_user.id
+
     if uid in order_state and order_state[uid].get("lens"):
-        await proceed_to_admin(client, msg.from_user, uid)
+        # forward power image to admin
+        await msg.forward(ADMIN_ID)
+        await send_to_admin(client, msg.from_user, uid, power_provided=True)
+
         await msg.reply(
-            "✅ Power received.\n\n"
+            "✅ Power received successfully.\n\n"
             "Admin will contact you soon,\n"
             "be ready with your money Hehehe..."
         )
@@ -208,11 +219,14 @@ async def private_text(client, msg):
 
     if "lenskart.com" in text:
         order_state[uid] = {"link": text}
-        await msg.reply(
-            "📌 *Send ORIGINAL MRP*\n\n"
-            "• Check product page\n"
-            "• Type only number (example: 3999)\n"
-            "• Minimum ₹3000"
+        await msg.reply_photo(
+            MRP_HELP_IMAGE,
+            caption=(
+                "📌 *Send ORIGINAL MRP*\n\n"
+                "• Check product page\n"
+                "• Type only number (example: 3999)\n"
+                "• Minimum ₹3000"
+            )
         )
         return
 
@@ -227,10 +241,7 @@ async def private_text(client, msg):
 
         await msg.reply(
             "✍️ *Type your Lens Type*\n\n"
-            "Example:\n"
-            "• Single Vision\n"
-            "• Blue Cut\n"
-            "• Progressive"
+            "Example:\n• Single Vision\n• Blue Cut\n• Progressive"
         )
         return
 
@@ -246,8 +257,8 @@ async def private_text(client, msg):
         )
         return
 
-# ================= ADMIN SENDER =================
-async def proceed_to_admin(client, user, uid):
+# ================= SEND TO ADMIN =================
+async def send_to_admin(client, user, uid, power_provided: bool):
     info = order_state.pop(uid)
     oid = str(uuid.uuid4())[:8]
 
@@ -257,12 +268,15 @@ async def proceed_to_admin(client, user, uid):
     )
     conn.commit()
 
+    power_text = "Provided (see image above)" if power_provided else "Not provided"
+
     admin_msg = (
         "PAYMENT RECEIVED\n\n"
         f"Order ID: {oid}\n"
         f"User: @{user.username or 'NoUsername'}\n"
         f"User ID: {uid}\n\n"
         f"Lens Type: {info['lens']}\n"
+        f"Power: {power_text}\n"
         f"MRP: ₹{info['mrp']}\n"
         f"Pay Amount: ₹{info['price']}\n\n"
         f"Product:\n{info['link']}"
