@@ -3,6 +3,7 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import os, uuid, psycopg2
 import pyrogram.utils
 
+# ================= FIX CHANNEL RANGE =================
 pyrogram.utils.MIN_CHANNEL_ID = -1009147483647
 
 # ================= ENV =================
@@ -13,13 +14,12 @@ API_HASH = os.getenv("API_HASH")
 DATABASE_URL = os.getenv("DATABASE_URL")
 LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID"))
 
-# ================= BUSINESS =================
+# ================= BUSINESS RULE =================
 MIN_MRP = 3000
 DISCOUNT_PERCENT = 75
 
 # ================= IMAGES =================
 START_IMAGE = "https://files.catbox.moe/5t348b.jpg"
-MRP_HELP_IMAGE = "https://files.catbox.moe/orp6r5.jpg"
 
 # ================= BOT =================
 app = Client(
@@ -131,7 +131,6 @@ async def callbacks(client, cb):
         await cb.message.reply("🆘 Send your issue in ONE message")
         return
 
-    # ---------- NO POWER ----------
     if data == "no_power":
         await proceed_to_admin(client, cb.from_user, uid)
         await cb.message.reply(
@@ -141,7 +140,6 @@ async def callbacks(client, cb):
         )
         return
 
-    # ---------- ADMIN CONFIRM ----------
     if uid == ADMIN_ID and data.startswith("admin_confirm:"):
         oid = data.split(":")[1]
         cur.execute("UPDATE orders SET status='CONFIRMED' WHERE order_id=%s", (oid,))
@@ -154,7 +152,6 @@ async def callbacks(client, cb):
         await cb.message.edit_reply_markup(status_buttons(oid))
         return
 
-    # ---------- ADMIN REJECT ----------
     if uid == ADMIN_ID and data.startswith("admin_reject:"):
         oid = data.split(":")[1]
         cur.execute("UPDATE orders SET status='REJECTED' WHERE order_id=%s", (oid,))
@@ -167,7 +164,6 @@ async def callbacks(client, cb):
         await cb.message.edit_reply_markup(None)
         return
 
-    # ---------- STATUS UPDATE ----------
     if uid == ADMIN_ID and data.startswith("status:"):
         _, status, oid = data.split(":")
         cur.execute("UPDATE orders SET status=%s WHERE order_id=%s", (status, oid))
@@ -190,7 +186,7 @@ async def callbacks(client, cb):
 @app.on_message(filters.photo & filters.private)
 async def power_photo(client, msg):
     uid = msg.from_user.id
-    if uid in order_state and "lens" in order_state[uid]:
+    if uid in order_state and order_state[uid].get("lens"):
         await proceed_to_admin(client, msg.from_user, uid)
         await msg.reply(
             "✅ Power received.\n\n"
@@ -212,7 +208,12 @@ async def private_text(client, msg):
 
     if "lenskart.com" in text:
         order_state[uid] = {"link": text}
-        await msg.reply_photo(MRP_HELP_IMAGE, caption="📌 Send ORIGINAL MRP (₹3000+)")
+        await msg.reply(
+            "📌 *Send ORIGINAL MRP*\n\n"
+            "• Check product page\n"
+            "• Type only number (example: 3999)\n"
+            "• Minimum ₹3000"
+        )
         return
 
     if uid in order_state and "mrp" not in order_state[uid] and text.isdigit():
@@ -225,29 +226,25 @@ async def private_text(client, msg):
         order_state[uid].update({"mrp": mrp, "price": price})
 
         await msg.reply(
-            "Select Lens Type:",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("Single Vision", callback_data="lens:Single Vision")],
-                [InlineKeyboardButton("Blue Cut", callback_data="lens:Blue Cut")],
-                [InlineKeyboardButton("Progressive", callback_data="lens:Progressive")]
-            ])
+            "✍️ *Type your Lens Type*\n\n"
+            "Example:\n"
+            "• Single Vision\n"
+            "• Blue Cut\n"
+            "• Progressive"
         )
         return
 
-# ================= LENS TYPE =================
-@app.on_callback_query(filters.regex("^lens:"))
-async def lens_type(client, cb):
-    uid = cb.from_user.id
-    lens = cb.data.split(":", 1)[1]
-    order_state[uid]["lens"] = lens
+    if uid in order_state and "mrp" in order_state[uid] and "lens" not in order_state[uid]:
+        order_state[uid]["lens"] = text
 
-    await cb.message.reply(
-        "📄 *Send the screenshot of your POWER*\n\n"
-        "If you don’t have power, click below.",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("❌ I don’t have a power", callback_data="no_power")]
-        ])
-    )
+        await msg.reply(
+            "📄 *Send the screenshot of your POWER*\n\n"
+            "If you don’t have power, click below.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("❌ I don’t have a power", callback_data="no_power")]
+            ])
+        )
+        return
 
 # ================= ADMIN SENDER =================
 async def proceed_to_admin(client, user, uid):
