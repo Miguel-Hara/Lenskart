@@ -1,5 +1,6 @@
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from pyrogram.enums import ParseMode
 import os, uuid, psycopg2
 import pyrogram.utils
 
@@ -26,13 +27,15 @@ app = Client(
     "lenskart_order_bot",
     bot_token=BOT_TOKEN,
     api_id=API_ID,
-    api_hash=API_HASH
+    api_hash=API_HASH,
+    parse_mode=ParseMode.HTML
 )
 
 # ================= DATABASE =================
 conn = psycopg2.connect(DATABASE_URL, sslmode="require")
 cur = conn.cursor()
 
+# USERS
 cur.execute("""
 CREATE TABLE IF NOT EXISTS users (
     telegram_id BIGINT PRIMARY KEY,
@@ -40,6 +43,7 @@ CREATE TABLE IF NOT EXISTS users (
 )
 """)
 
+# ORDERS
 cur.execute("""
 CREATE TABLE IF NOT EXISTS orders (
     order_id TEXT PRIMARY KEY,
@@ -51,6 +55,7 @@ CREATE TABLE IF NOT EXISTS orders (
 )
 """)
 
+# SAFE MIGRATION
 cur.execute("""
 SELECT column_name FROM information_schema.columns
 WHERE table_name='orders' AND column_name='lens_type'
@@ -90,13 +95,12 @@ async def start(client, msg):
         caption=(
             "🕶️ <b>Lenskart Order Bot</b>\n\n"
             "💥 <b>Flat 75% OFF + ₹1 extra</b>\n"
-            "<i>75% discount milega + ₹1 aur kam</i>\n\n"
-            "💸 <b>No advance payment required</b>\n"
-            "<i>Koi advance payment nahi deni hogi</i>\n\n"
-            "👇 <b>Please choose an option below</b>\n"
+            "<i>75% discount + ₹1 aur kam</i>\n\n"
+            "💸 <b>No advance payment</b>\n"
+            "<i>Koi advance payment nahi</i>\n\n"
+            "👇 <b>Please choose an option</b>\n"
             "<i>Neeche option select karein</i>"
         ),
-        parse_mode="html",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🛒 New Order", callback_data="buy")],
             [InlineKeyboardButton("🆘 Support", callback_data="support")]
@@ -110,8 +114,7 @@ async def support(client, msg):
     await msg.reply(
         "🆘 <b>Support</b>\n\n"
         "Please send your issue in ONE message.\n"
-        "<i>Apni problem ek hi message mein bhejein.</i>",
-        parse_mode="html"
+        "<i>Apni problem ek hi message mein bhejein</i>"
     )
 
 # ================= TRACK =================
@@ -120,8 +123,7 @@ async def track(client, msg):
     if len(msg.command) != 2:
         await msg.reply(
             "Usage: <code>/track ORDER_ID</code>\n"
-            "<i>Istemaal: /track ORDER_ID</i>",
-            parse_mode="html"
+            "<i>Istemaal: /track ORDER_ID</i>"
         )
         return
 
@@ -135,15 +137,13 @@ async def track(client, msg):
     if not row:
         await msg.reply(
             "❌ <b>Order not found</b>\n"
-            "<i>Order nahi mila</i>",
-            parse_mode="html"
+            "<i>Order nahi mila</i>"
         )
         return
 
     await msg.reply(
         f"📦 <b>Order ID:</b> <code>{oid}</code>\n"
-        f"📍 <b>Status:</b> {row[0]}",
-        parse_mode="html"
+        f"📍 <b>Status:</b> {row[0]}"
     )
 
 # ================= ADMIN REPLY =================
@@ -166,8 +166,7 @@ async def callbacks(client, cb):
     if data == "buy":
         await cb.message.reply(
             "🔗 <b>Please send the Lenskart product link</b>\n"
-            "<i>Lenskart ka product link bhejein</i>",
-            parse_mode="html"
+            "<i>Lenskart ka product link bhejein</i>"
         )
         return
 
@@ -175,8 +174,7 @@ async def callbacks(client, cb):
         support_waiting.add(uid)
         await cb.message.reply(
             "🆘 Send your issue in one message\n"
-            "<i>Apni problem ek message mein likhein</i>",
-            parse_mode="html"
+            "<i>Apni problem ek message mein likhein</i>"
         )
         return
 
@@ -191,8 +189,7 @@ async def callbacks(client, cb):
         await client.send_message(
             user_id,
             "✅ <b>Your order has been confirmed</b>\n"
-            "<i>Aapka order confirm ho gaya hai</i>",
-            parse_mode="html"
+            "<i>Aapka order confirm ho gaya hai</i>"
         )
         await cb.message.edit_reply_markup(status_buttons(oid))
         return
@@ -208,11 +205,26 @@ async def callbacks(client, cb):
         await client.send_message(
             user_id,
             "❌ <b>Your order was rejected</b>\n"
-            "<i>Aapka order reject kar diya gaya hai</i>",
-            parse_mode="html"
+            "<i>Aapka order reject kar diya gaya</i>"
         )
         await cb.message.edit_reply_markup(None)
         return
+
+    if uid == ADMIN_ID and data.startswith("status:"):
+        _, status, oid = data.split(":")
+        cur.execute("UPDATE orders SET status=%s WHERE order_id=%s", (status, oid))
+        conn.commit()
+
+        cur.execute("SELECT telegram_id FROM orders WHERE order_id=%s", (oid,))
+        user_id = cur.fetchone()[0]
+
+        messages = {
+            "PACKED": "📦 <b>Order packed</b>\n<i>Order pack ho gaya</i>",
+            "ON_THE_WAY": "🚚 <b>Order on the way</b>\n<i>Order raste mein hai</i>",
+            "DELIVERED": "📬 <b>Order delivered</b>\n<i>Order deliver ho gaya</i>"
+        }
+
+        await client.send_message(user_id, messages[status])
 
 # ================= POWER PHOTO =================
 @app.on_message(filters.photo & filters.private)
@@ -225,8 +237,7 @@ async def power_photo(client, msg):
             "✅ <b>Image received successfully</b>\n"
             "<i>Image mil gayi hai</i>\n\n"
             "📞 Admin will contact you soon\n"
-            "<i>Admin aapse jaldi contact karega</i>",
-            parse_mode="html"
+            "<i>Admin aapse jaldi contact karega</i>"
         )
 
 # ================= PRIVATE TEXT =================
@@ -240,8 +251,7 @@ async def private_text(client, msg):
         await msg.forward(ADMIN_ID)
         await msg.reply(
             "✅ Support message sent\n"
-            "<i>Support message bhej diya gaya hai</i>",
-            parse_mode="html"
+            "<i>Support message bhej diya gaya</i>"
         )
         return
 
@@ -256,8 +266,7 @@ async def private_text(client, msg):
                 "<i>Sirf number likhein</i>\n"
                 "• Minimum ₹3000 required\n"
                 "<i>Minimum ₹3000 hona chahiye</i>"
-            ),
-            parse_mode="html"
+            )
         )
         return
 
@@ -266,8 +275,7 @@ async def private_text(client, msg):
         if mrp < MIN_MRP:
             await msg.reply(
                 "❌ <b>Minimum MRP must be ₹3000</b>\n"
-                "<i>Minimum MRP ₹3000 hona chahiye</i>",
-                parse_mode="html"
+                "<i>Minimum MRP ₹3000 hona chahiye</i>"
             )
             return
 
@@ -277,8 +285,7 @@ async def private_text(client, msg):
         await msg.reply(
             "✍️ <b>Please type your Lens Type</b>\n"
             "<i>Apna lens type likhein</i>\n\n"
-            "Example:\n• Single Vision\n• Blue Cut\n• Progressive",
-            parse_mode="html"
+            "Example:\n• Single Vision\n• Blue Cut\n• Progressive"
         )
         return
 
@@ -286,8 +293,7 @@ async def private_text(client, msg):
         order_state[uid]["lens"] = text
         await msg.reply(
             "📄 <b>Please send your power screenshot</b>\n"
-            "<i>Agar power nahi hai to koi bhi image bhej sakte hain</i>",
-            parse_mode="html"
+            "<i>Agar power nahi hai to koi bhi image bhej sakte hain</i>"
         )
 
 # ================= SEND TO ADMIN =================
@@ -319,7 +325,6 @@ async def send_to_admin(client, user, uid):
     await client.send_message(
         ADMIN_ID,
         admin_msg,
-        parse_mode="html",
         reply_markup=InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("✅ Confirm", callback_data=f"admin_confirm:{oid}"),
@@ -328,7 +333,7 @@ async def send_to_admin(client, user, uid):
         ])
     )
 
-    await client.send_message(LOG_CHANNEL_ID, admin_msg, parse_mode="html")
+    await client.send_message(LOG_CHANNEL_ID, admin_msg)
 
 # ================= RUN =================
 app.run()
